@@ -70,6 +70,7 @@ pub struct MessageParams {
     pub before_rowid: Option<i32>,
     pub after_rowid: Option<i32>,
     pub limit: Option<usize>,
+    pub fast_initial: Option<bool>,
 }
 
 #[derive(Deserialize)]

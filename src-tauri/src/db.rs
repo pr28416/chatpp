@@ -6,6 +6,7 @@ use imessage_database::tables::table::Table;
 use rusqlite::Connection;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::time::Instant;
 
 /// Seconds between Unix epoch (1970-01-01) and Apple epoch (2001-01-01).
 const APPLE_EPOCH_OFFSET: i64 = 978307200;
@@ -399,6 +400,11 @@ pub fn query_messages(
     handles: &HashMap<i32, String>,
     contact_names: &HashMap<String, String>,
 ) -> Result<PaginatedMessages, Box<dyn std::error::Error + Send + Sync>> {
+    let query_started_at = Instant::now();
+    let sql_fetch_ms: u128;
+    let enrichment_ms: u128;
+    let reaction_ms: u128;
+
     let has_recovery_table = db
         .prepare(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='chat_recoverable_message_join'",
@@ -472,7 +478,7 @@ pub fn query_messages(
         "SELECT *, c.chat_id,
             (SELECT COUNT(*) FROM message_attachment_join a WHERE m.ROWID = a.message_id) AS num_attachments,
             {recovery_col},
-            (SELECT COUNT(*) FROM message m2 WHERE m2.thread_originator_guid = m.guid) AS num_replies
+            0 AS num_replies
         FROM message AS m
         LEFT JOIN chat_message_join AS c ON m.ROWID = c.message_id
         {recovery_join}
@@ -481,6 +487,7 @@ pub fn query_messages(
         {limit_clause}"
     );
 
+    let sql_fetch_started = Instant::now();
     let mut messages: Vec<Message> = {
         let mut stmt = db.prepare(&sql)?;
         let param_refs: Vec<&dyn rusqlite::types::ToSql> = sql_params
@@ -499,6 +506,7 @@ pub fn query_messages(
         }
         msgs
     };
+    sql_fetch_ms = sql_fetch_started.elapsed().as_millis();
 
     let has_extra = if apply_limit {
         let extra = messages.len() > limit;
@@ -517,8 +525,16 @@ pub fn query_messages(
     let mut responses = Vec::new();
     let mut guid_to_index: HashMap<String, usize> = HashMap::new();
 
+    let enrichment_started = Instant::now();
     for mut msg in messages {
-        let _ = msg.generate_text(db);
+        let has_text = msg
+            .text
+            .as_ref()
+            .map(|t| !t.trim().is_empty())
+            .unwrap_or(false);
+        if !has_text {
+            let _ = msg.generate_text(db);
+        }
 
         let raw_handle = msg.handle_id.and_then(|hid| handles.get(&hid)).cloned();
 
@@ -585,7 +601,9 @@ pub fn query_messages(
         }
         responses.push(response);
     }
+    enrichment_ms = enrichment_started.elapsed().as_millis();
 
+    let reaction_started = Instant::now();
     let mut reactions_map: HashMap<String, Vec<ReactionResponse>> = HashMap::new();
 
     for resp in &responses {
@@ -609,7 +627,8 @@ pub fn query_messages(
     }
 
     let visible_guids: Vec<String> = guid_to_index.keys().cloned().collect();
-    if !visible_guids.is_empty() {
+    let skip_external_reactions = params.fast_initial.unwrap_or(false);
+    if !skip_external_reactions && !visible_guids.is_empty() {
         let external_reactions =
             fetch_external_reactions(db, &visible_guids, handles, contact_names);
         for (target_guid, mut ext_reactions) in external_reactions {
@@ -625,6 +644,7 @@ pub fn query_messages(
             responses[idx].reactions = reactions;
         }
     }
+    reaction_ms = reaction_started.elapsed().as_millis();
 
     let (has_more, has_previous) = if !apply_limit {
         (false, false)
@@ -635,6 +655,19 @@ pub fn query_messages(
     } else {
         (false, has_extra)
     };
+
+    if cfg!(debug_assertions) {
+        eprintln!(
+            "[perf][query_messages] chat_id={} fast_initial={} total={}ms sql={}ms enrich={}ms reactions={}ms rows={}",
+            chat_id,
+            skip_external_reactions,
+            query_started_at.elapsed().as_millis(),
+            sql_fetch_ms,
+            enrichment_ms,
+            reaction_ms,
+            responses.len()
+        );
+    }
 
     Ok(PaginatedMessages {
         messages: responses,

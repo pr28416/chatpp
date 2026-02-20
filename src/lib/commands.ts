@@ -13,6 +13,7 @@ export async function fetchMessages(
     before_rowid?: number;
     after_rowid?: number;
     limit?: number;
+    fast_initial?: boolean;
   },
 ): Promise<PaginatedMessages> {
   return invoke("get_messages", {
@@ -22,6 +23,7 @@ export async function fetchMessages(
     beforeRowid: params.before_rowid,
     afterRowid: params.after_rowid,
     limit: params.limit,
+    fastInitial: params.fast_initial,
   });
 }
 

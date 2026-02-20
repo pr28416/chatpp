@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { Message, DateRange, Chat, SearchResult } from "@/lib/types";
+import { Message, DateRange, Chat, SearchResult, PaginatedMessages } from "@/lib/types";
 import { fetchMessages } from "@/lib/commands";
 import { MessageBubble } from "./message-bubble";
 import { MessageMinimap } from "./message-minimap";
@@ -14,6 +14,75 @@ interface MessageViewProps {
   chat: Chat | null;
 }
 
+interface MessageCacheEntry {
+  messages: Message[];
+  hasPrevious: boolean;
+  hasMore: boolean;
+  cachedAt: number;
+}
+
+const MESSAGE_CACHE_TTL_MS = 2 * 60 * 1000;
+const MESSAGE_CACHE_MAX = 20;
+const INITIAL_LOAD_LIMIT = 60;
+const PAGE_LOAD_LIMIT = 10;
+const messageCache = new Map<string, MessageCacheEntry>();
+const IS_DEV =
+  ((import.meta as ImportMeta & { env?: { DEV?: boolean } }).env?.DEV ??
+    false) === true;
+
+function getDateRangeKey(dateRange: DateRange): string {
+  const start = dateRange.start ?? "";
+  const end = dateRange.end ?? "";
+  return `${start}|${end}`;
+}
+
+function getCacheKey(chatId: number, dateRange: DateRange): string {
+  return `${chatId}:${getDateRangeKey(dateRange)}`;
+}
+
+function getCachedMessages(cacheKey: string): MessageCacheEntry | null {
+  const now = Date.now();
+  const entry = messageCache.get(cacheKey);
+  if (!entry) return null;
+  if (now - entry.cachedAt > MESSAGE_CACHE_TTL_MS) {
+    messageCache.delete(cacheKey);
+    return null;
+  }
+
+  // Refresh insertion order to keep LRU semantics.
+  messageCache.delete(cacheKey);
+  messageCache.set(cacheKey, entry);
+  return entry;
+}
+
+function setCachedMessages(cacheKey: string, value: MessageCacheEntry) {
+  const now = Date.now();
+
+  for (const [key, entry] of messageCache.entries()) {
+    if (now - entry.cachedAt > MESSAGE_CACHE_TTL_MS) {
+      messageCache.delete(key);
+    }
+  }
+
+  if (messageCache.has(cacheKey)) {
+    messageCache.delete(cacheKey);
+  }
+
+  messageCache.set(cacheKey, value);
+
+  while (messageCache.size > MESSAGE_CACHE_MAX) {
+    const oldestKey = messageCache.keys().next().value;
+    if (!oldestKey) break;
+    messageCache.delete(oldestKey);
+  }
+}
+
+function maybeLogDev(message: string, ...args: unknown[]) {
+  if (IS_DEV) {
+    console.log(message, ...args);
+  }
+}
+
 export function MessageView({ chat }: MessageViewProps) {
   const [messages, setMessages] = React.useState<Message[]>([]);
   const [dateRange, setDateRange] = React.useState<DateRange>({});
@@ -23,10 +92,19 @@ export function MessageView({ chat }: MessageViewProps) {
   const [loadingDirection, setLoadingDirection] = React.useState<
     "initial" | "previous" | "more" | null
   >(null);
-  const scrollRef = React.useRef<HTMLDivElement>(null);
+  const [isInitialLoadComplete, setIsInitialLoadComplete] =
+    React.useState(false);
 
+  const scrollRef = React.useRef<HTMLDivElement>(null);
   const topSentinelRef = React.useRef<HTMLDivElement>(null);
   const bottomSentinelRef = React.useRef<HTMLDivElement>(null);
+
+  const activeLoadIdRef = React.useRef(0);
+  const busyRef = React.useRef(false);
+  const scrollToAfterPrepend = React.useRef<number | null>(null);
+  const selectionStartRef = React.useRef<number | null>(null);
+  const initialFetchCountRef = React.useRef(0);
+  const fetchWindowTimerRef = React.useRef<number | null>(null);
 
   const displayMessages = React.useMemo(
     () => messages.filter((m) => !m.is_tapback),
@@ -62,6 +140,8 @@ export function MessageView({ chat }: MessageViewProps) {
     if (searchResults.length === 0) return undefined;
     return new Set(searchResults.map((r) => r.rowid));
   }, [searchResults]);
+
+  const canAutoPaginate = isInitialLoadComplete && !loading;
 
   React.useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -106,16 +186,21 @@ export function MessageView({ chat }: MessageViewProps) {
       }
 
       if (!chat) return;
+      const loadId = activeLoadIdRef.current;
+
       fetchMessages(chat.id, {
         after_rowid: result.rowid - 1,
-        limit: 10,
+        limit: PAGE_LOAD_LIMIT,
       }).then((data) => {
-        if (data.messages.length === 0) return;
+        if (loadId !== activeLoadIdRef.current || data.messages.length === 0)
+          return;
+
         setMessages(data.messages);
         setHasPrevious(true);
         setHasMore(data.has_more);
 
         setTimeout(() => {
+          if (loadId !== activeLoadIdRef.current) return;
           const newIdx = data.messages
             .filter((m) => !m.is_tapback)
             .findIndex((m) => m.rowid === result.rowid);
@@ -183,63 +268,164 @@ export function MessageView({ chat }: MessageViewProps) {
       if (len > 80) return 72;
       return 52;
     },
-    overscan: 30,
+    overscan: 12,
     getItemKey: (index) => displayMessages[index]?.rowid ?? index,
   });
 
   virtualizerRef.current = virtualizer;
 
+  const applyMessagePayload = React.useCallback(
+    (
+      data: PaginatedMessages,
+      hasDateRange: boolean,
+      options: { loadId: number },
+    ) => {
+      setMessages(data.messages);
+      setHasPrevious(hasDateRange ? data.messages.length > 0 : data.has_previous);
+      setHasMore(hasDateRange ? data.messages.length > 0 : data.has_more);
+
+      const finishInitialLoad = () => {
+        setIsInitialLoadComplete(true);
+        if (selectionStartRef.current !== null) {
+          const duration = performance.now() - selectionStartRef.current;
+          maybeLogDev("[perf] chat select -> first messages rendered: %.1fms", duration);
+          selectionStartRef.current = null;
+        }
+      };
+
+      if (!hasDateRange) {
+        const visibleTargetIndex =
+          data.messages.filter((m) => !m.is_tapback).length - 1;
+
+        const alignToBottom = (attempt: number) => {
+          if (options.loadId !== activeLoadIdRef.current) return;
+
+          if (visibleTargetIndex >= 0) {
+            virtualizerRef.current?.scrollToIndex(visibleTargetIndex, {
+              align: "end",
+            });
+          }
+
+          if (scrollRef.current) {
+            scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+          }
+
+          if (attempt < 2) {
+            requestAnimationFrame(() => alignToBottom(attempt + 1));
+            return;
+          }
+
+          requestAnimationFrame(finishInitialLoad);
+        };
+
+        requestAnimationFrame(() => alignToBottom(0));
+        return;
+      }
+
+      requestAnimationFrame(finishInitialLoad);
+    },
+    [],
+  );
+
   React.useEffect(() => {
+    if (fetchWindowTimerRef.current !== null) {
+      window.clearTimeout(fetchWindowTimerRef.current);
+      fetchWindowTimerRef.current = null;
+    }
+
     if (!chat) {
+      activeLoadIdRef.current += 1;
+      busyRef.current = false;
       setMessages([]);
+      setHasPrevious(false);
+      setHasMore(false);
+      setLoading(false);
+      setLoadingDirection(null);
+      setIsInitialLoadComplete(false);
+      setHighlightedRowid(null);
+      selectionStartRef.current = null;
       return;
     }
 
-    let cancelled = false;
+    const loadId = activeLoadIdRef.current + 1;
+    activeLoadIdRef.current = loadId;
+
+    busyRef.current = false;
+    setMessages([]);
+    setHasPrevious(false);
+    setHasMore(false);
+    setHighlightedRowid(null);
+    setIsInitialLoadComplete(false);
     setLoading(true);
     setLoadingDirection("initial");
 
+    selectionStartRef.current = performance.now();
+    initialFetchCountRef.current = 0;
+    fetchWindowTimerRef.current = window.setTimeout(() => {
+      maybeLogDev(
+        "[perf] initial fetches fired in first 1s for chat %d: %d",
+        chat.id,
+        initialFetchCountRef.current,
+      );
+      fetchWindowTimerRef.current = null;
+    }, 1000);
+
     const hasDateRange = !!(dateRange.start || dateRange.end);
+    const cacheKey = getCacheKey(chat.id, dateRange);
+
+    const cached = getCachedMessages(cacheKey);
+    if (cached) {
+      applyMessagePayload(
+        {
+          messages: cached.messages,
+          has_previous: cached.hasPrevious,
+          has_more: cached.hasMore,
+        },
+        hasDateRange,
+        { loadId },
+      );
+      setLoading(true);
+      setLoadingDirection(null);
+      maybeLogDev("[perf] message cache hit for key %s", cacheKey);
+    }
+
+    initialFetchCountRef.current += 1;
 
     fetchMessages(chat.id, {
       start: dateRange.start,
       end: dateRange.end,
-      limit: hasDateRange ? 0 : 10,
+      limit: hasDateRange ? 0 : INITIAL_LOAD_LIMIT,
       ...(hasDateRange ? { after_rowid: 0 } : {}),
+      fast_initial: true,
     })
       .then((data) => {
-        if (cancelled) return;
-        setMessages(data.messages);
-        setHasPrevious(
-          hasDateRange ? data.messages.length > 0 : data.has_previous,
-        );
-        setHasMore(hasDateRange ? data.messages.length > 0 : data.has_more);
+        if (loadId !== activeLoadIdRef.current) return;
+
+        applyMessagePayload(data, hasDateRange, { loadId });
         setLoading(false);
         setLoadingDirection(null);
 
-        if (!hasDateRange) {
-          setTimeout(() => {
-            if (scrollRef.current) {
-              scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-            }
-          }, 100);
-        }
+        setCachedMessages(cacheKey, {
+          messages: data.messages,
+          hasPrevious: hasDateRange ? data.messages.length > 0 : data.has_previous,
+          hasMore: hasDateRange ? data.messages.length > 0 : data.has_more,
+          cachedAt: Date.now(),
+        });
       })
       .catch((err) => {
-        if (cancelled) return;
+        if (loadId !== activeLoadIdRef.current) return;
         console.error("Failed to fetch messages:", err);
         setLoading(false);
         setLoadingDirection(null);
       });
 
     return () => {
-      cancelled = true;
+      if (fetchWindowTimerRef.current !== null) {
+        window.clearTimeout(fetchWindowTimerRef.current);
+        fetchWindowTimerRef.current = null;
+      }
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chat, dateRange]);
-
-  const busyRef = React.useRef(false);
-  const scrollToAfterPrepend = React.useRef<number | null>(null);
+  }, [chat, dateRange, applyMessagePayload]);
 
   React.useLayoutEffect(() => {
     if (scrollToAfterPrepend.current !== null) {
@@ -251,17 +437,29 @@ export function MessageView({ chat }: MessageViewProps) {
   });
 
   const loadPrevious = React.useCallback(async () => {
-    if (!chat || messages.length === 0 || busyRef.current || !hasPrevious)
+    if (
+      !chat ||
+      messages.length === 0 ||
+      busyRef.current ||
+      !hasPrevious ||
+      !canAutoPaginate
+    ) {
       return;
+    }
+
+    const loadId = activeLoadIdRef.current;
+    const firstRowId = messages[0].rowid;
 
     busyRef.current = true;
     setLoadingDirection("previous");
 
     try {
       const data = await fetchMessages(chat.id, {
-        before_rowid: messages[0].rowid,
-        limit: 10,
+        before_rowid: firstRowId,
+        limit: PAGE_LOAD_LIMIT,
       });
+
+      if (loadId !== activeLoadIdRef.current) return;
 
       const newDisplayCount = data.messages.filter((m) => !m.is_tapback).length;
       scrollToAfterPrepend.current = newDisplayCount;
@@ -269,34 +467,55 @@ export function MessageView({ chat }: MessageViewProps) {
       setMessages((prev) => [...data.messages, ...prev]);
       setHasPrevious(data.has_previous);
     } catch (err) {
-      console.error("Failed to fetch previous messages:", err);
+      if (loadId === activeLoadIdRef.current) {
+        console.error("Failed to fetch previous messages:", err);
+      }
     } finally {
-      busyRef.current = false;
-      setLoadingDirection(null);
+      if (loadId === activeLoadIdRef.current) {
+        busyRef.current = false;
+        setLoadingDirection(null);
+      }
     }
-  }, [chat, messages, hasPrevious]);
+  }, [chat, messages, hasPrevious, canAutoPaginate]);
 
   const loadMore = React.useCallback(async () => {
-    if (!chat || messages.length === 0 || busyRef.current || !hasMore) return;
+    if (
+      !chat ||
+      messages.length === 0 ||
+      busyRef.current ||
+      !hasMore ||
+      !canAutoPaginate
+    ) {
+      return;
+    }
+
+    const loadId = activeLoadIdRef.current;
+    const lastRowId = messages[messages.length - 1].rowid;
 
     busyRef.current = true;
     setLoadingDirection("more");
 
     try {
       const data = await fetchMessages(chat.id, {
-        after_rowid: messages[messages.length - 1].rowid,
-        limit: 10,
+        after_rowid: lastRowId,
+        limit: PAGE_LOAD_LIMIT,
       });
+
+      if (loadId !== activeLoadIdRef.current) return;
 
       setMessages((prev) => [...prev, ...data.messages]);
       setHasMore(data.has_more);
     } catch (err) {
-      console.error("Failed to fetch more messages:", err);
+      if (loadId === activeLoadIdRef.current) {
+        console.error("Failed to fetch more messages:", err);
+      }
     } finally {
-      busyRef.current = false;
-      setLoadingDirection(null);
+      if (loadId === activeLoadIdRef.current) {
+        busyRef.current = false;
+        setLoadingDirection(null);
+      }
     }
-  }, [chat, messages, hasMore]);
+  }, [chat, messages, hasMore, canAutoPaginate]);
 
   const loadPreviousRef = React.useRef(loadPrevious);
   const loadMoreRef = React.useRef(loadMore);
@@ -307,18 +526,9 @@ export function MessageView({ chat }: MessageViewProps) {
     loadMoreRef.current = loadMore;
   }, [loadMore]);
 
-  const isSentinelVisible = React.useCallback(
-    (sentinel: HTMLDivElement | null) => {
-      const root = scrollRef.current;
-      if (!sentinel || !root) return false;
-      const sRect = sentinel.getBoundingClientRect();
-      const rRect = root.getBoundingClientRect();
-      return sRect.bottom > rRect.top && sRect.top < rRect.bottom;
-    },
-    [],
-  );
-
   React.useEffect(() => {
+    if (!canAutoPaginate) return;
+
     const sentinel = topSentinelRef.current;
     const root = scrollRef.current;
     if (!sentinel || !root) return;
@@ -333,9 +543,11 @@ export function MessageView({ chat }: MessageViewProps) {
     );
     observer.observe(sentinel);
     return () => observer.disconnect();
-  }, [chat, hasPrevious]);
+  }, [chat, hasPrevious, canAutoPaginate]);
 
   React.useEffect(() => {
+    if (!canAutoPaginate) return;
+
     const sentinel = bottomSentinelRef.current;
     const root = scrollRef.current;
     if (!sentinel || !root) return;
@@ -350,24 +562,7 @@ export function MessageView({ chat }: MessageViewProps) {
     );
     observer.observe(sentinel);
     return () => observer.disconnect();
-  }, [chat, hasMore]);
-
-  React.useEffect(() => {
-    let cancelled = false;
-    const rafId = requestAnimationFrame(() => {
-      if (cancelled) return;
-      if (hasPrevious && isSentinelVisible(topSentinelRef.current)) {
-        loadPreviousRef.current();
-      }
-      if (hasMore && isSentinelVisible(bottomSentinelRef.current)) {
-        loadMoreRef.current();
-      }
-    });
-    return () => {
-      cancelled = true;
-      cancelAnimationFrame(rafId);
-    };
-  }, [messages, hasPrevious, hasMore, isSentinelVisible]);
+  }, [chat, hasMore, canAutoPaginate]);
 
   if (!chat) {
     return (

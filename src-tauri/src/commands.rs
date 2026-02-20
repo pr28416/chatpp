@@ -30,6 +30,7 @@ pub fn get_messages(
     before_rowid: Option<i32>,
     after_rowid: Option<i32>,
     limit: Option<usize>,
+    fast_initial: Option<bool>,
 ) -> Result<PaginatedMessages, String> {
     let db = rusqlite::Connection::open_with_flags(
         &state.db_path,
@@ -43,6 +44,7 @@ pub fn get_messages(
         before_rowid,
         after_rowid,
         limit,
+        fast_initial,
     };
     let effective_limit = params.limit.unwrap_or(10);
 
