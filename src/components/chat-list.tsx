@@ -130,15 +130,15 @@ export function ChatList({
               />
 
               <div className="flex-1 min-w-0">
-                <div className="flex justify-between gap-2">
-                  <span className="text-sm font-medium text-foreground line-clamp-2">
+                <div className="flex items-start gap-2 min-w-0">
+                  <span className="min-w-0 flex-1 text-sm font-medium text-foreground truncate">
                     {formatChatName(chat)}
                   </span>
                   <span className="text-xs text-muted-foreground shrink-0 pt-0.5">
                     {formatDate(chat.last_message_date)}
                   </span>
                 </div>
-                <p className="text-xs text-muted-foreground truncate mt-0.5">
+                <p className="text-xs text-muted-foreground line-clamp-2 break-all mt-0.5 leading-relaxed">
                   {chat.last_message_text ||
                     (chat.participant_handles.length > 0
                       ? chat.participant_handles.join(", ")

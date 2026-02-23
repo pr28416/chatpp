@@ -605,6 +605,12 @@ pub fn query_messages(
 
     let reaction_started = Instant::now();
     let mut reactions_map: HashMap<String, Vec<ReactionResponse>> = HashMap::new();
+    let tapback_rowids: Vec<i32> = responses
+        .iter()
+        .filter(|resp| resp.is_tapback)
+        .map(|resp| resp.rowid)
+        .collect();
+    let tapback_emojis = fetch_tapback_emojis(db, &tapback_rowids);
 
     for resp in &responses {
         if !resp.is_tapback {
@@ -612,7 +618,10 @@ pub fn query_messages(
         }
         if let Some(ref assoc_guid) = resp.associated_message_guid {
             let target_guid = extract_target_guid(assoc_guid);
-            let reaction_type = tapback_type_from_associated_type(resp.associated_message_type);
+            let reaction_type = reaction_type_from_associated(
+                resp.associated_message_type,
+                tapback_emojis.get(&resp.rowid).map(String::as_str),
+            );
 
             reactions_map
                 .entry(target_guid)
@@ -688,7 +697,12 @@ fn extract_target_guid(assoc_guid: &str) -> String {
     }
 }
 
-fn tapback_type_from_associated_type(assoc_type: Option<i32>) -> String {
+fn reaction_type_from_associated(assoc_type: Option<i32>, assoc_emoji: Option<&str>) -> String {
+    let emoji = assoc_emoji
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+
     match assoc_type {
         Some(2000) => "Loved".to_string(),
         Some(2001) => "Liked".to_string(),
@@ -696,15 +710,72 @@ fn tapback_type_from_associated_type(assoc_type: Option<i32>) -> String {
         Some(2003) => "Laughed".to_string(),
         Some(2004) => "Emphasized".to_string(),
         Some(2005) => "Questioned".to_string(),
+        Some(2006) => emoji.unwrap_or_else(|| "Emoji".to_string()),
         Some(3000) => "Removed Loved".to_string(),
         Some(3001) => "Removed Liked".to_string(),
         Some(3002) => "Removed Disliked".to_string(),
         Some(3003) => "Removed Laughed".to_string(),
         Some(3004) => "Removed Emphasized".to_string(),
         Some(3005) => "Removed Questioned".to_string(),
+        Some(3006) => format!("Removed {}", emoji.unwrap_or_else(|| "Emoji".to_string())),
         Some(n) => format!("Unknown({})", n),
         None => "Unknown".to_string(),
     }
+}
+
+fn fetch_tapback_emojis(db: &Connection, rowids: &[i32]) -> HashMap<i32, String> {
+    let mut result: HashMap<i32, String> = HashMap::new();
+    if rowids.is_empty() {
+        return result;
+    }
+
+    let mut placeholders = Vec::with_capacity(rowids.len());
+    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::with_capacity(rowids.len());
+    for (idx, rowid) in rowids.iter().enumerate() {
+        placeholders.push(format!("?{}", idx + 1));
+        params.push(Box::new(*rowid));
+    }
+
+    let sql = format!(
+        "SELECT ROWID, associated_message_emoji
+         FROM message
+         WHERE ROWID IN ({})
+           AND associated_message_emoji IS NOT NULL",
+        placeholders.join(",")
+    );
+
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+        params.iter().map(|v| v.as_ref()).collect();
+
+    let mut stmt = match db.prepare(&sql) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Warning: failed to prepare tapback emoji query: {:?}", e);
+            return result;
+        }
+    };
+
+    let rows = match stmt.query_map(param_refs.as_slice(), |row| {
+        Ok((row.get::<_, i32>(0)?, row.get::<_, Option<String>>(1)?))
+    }) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("Warning: failed to fetch tapback emojis: {:?}", e);
+            return result;
+        }
+    };
+
+    for row in rows.flatten() {
+        let (rowid, emoji) = row;
+        if let Some(e) = emoji {
+            let trimmed = e.trim();
+            if !trimmed.is_empty() {
+                result.insert(rowid, trimmed.to_string());
+            }
+        }
+    }
+
+    result
 }
 
 fn fetch_external_reactions(
@@ -731,7 +802,7 @@ fn fetch_external_reactions(
     let where_clause = conditions.join(" OR ");
     let sql = format!(
         "SELECT m.ROWID, m.guid, m.associated_message_guid, m.associated_message_type,
-                m.handle_id, m.is_from_me, m.date
+                m.associated_message_emoji, m.handle_id, m.is_from_me, m.date
          FROM message m
          WHERE ({where_clause})
            AND m.associated_message_type IS NOT NULL
@@ -759,9 +830,10 @@ fn fetch_external_reactions(
         Ok((
             row.get::<_, Option<String>>(2)?,
             row.get::<_, Option<i32>>(3)?,
-            row.get::<_, Option<i32>>(4)?,
-            row.get::<_, bool>(5)?,
-            row.get::<_, i64>(6)?,
+            row.get::<_, Option<String>>(4)?,
+            row.get::<_, Option<i32>>(5)?,
+            row.get::<_, bool>(6)?,
+            row.get::<_, i64>(7)?,
         ))
     }) {
         Ok(r) => r,
@@ -772,7 +844,8 @@ fn fetch_external_reactions(
     };
 
     for row in rows {
-        if let Ok((Some(assoc_guid), assoc_type, handle_id, is_from_me, date)) = row {
+        if let Ok((Some(assoc_guid), assoc_type, assoc_emoji, handle_id, is_from_me, date)) = row
+        {
             let target_guid = extract_target_guid(&assoc_guid);
             let sender = handle_id
                 .and_then(|hid| handles.get(&hid))
@@ -780,7 +853,8 @@ fn fetch_external_reactions(
                     resolve_handle_name(handle_id_str, contact_names)
                         .unwrap_or_else(|| handle_id_str.clone())
                 });
-            let reaction_type = tapback_type_from_associated_type(assoc_type);
+            let reaction_type =
+                reaction_type_from_associated(assoc_type, assoc_emoji.as_deref());
 
             if reaction_type.starts_with("Removed") {
                 continue;

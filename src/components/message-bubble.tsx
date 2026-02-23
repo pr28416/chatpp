@@ -2,6 +2,13 @@ import * as React from "react";
 import { Message, Attachment, Reaction } from "@/lib/types";
 import { ContactAvatar } from "./contact-avatar";
 import { format, parseISO } from "date-fns";
+import {
+  Popover,
+  PopoverContent,
+  PopoverHeader,
+  PopoverTitle,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 
 function attachmentUrl(rowid: number): string {
   return `localfile://localhost/${rowid}`;
@@ -35,7 +42,12 @@ export function MessageBubble({
   const isSent = message.is_from_me;
   const text = message.text?.replace(/\uFFFC/g, "").trim() || null;
   const hasAttachments = message.attachments.length > 0;
-  const hasReactions = message.reactions.length > 0;
+  const activeReactions = React.useMemo(
+    () => message.reactions.filter((r) => !r.reaction_type.startsWith("Removed")),
+    [message.reactions],
+  );
+  const hasReactions = activeReactions.length > 0;
+  const [isReactionOpen, setIsReactionOpen] = React.useState(false);
 
   if (!text && !hasAttachments) return null;
 
@@ -154,51 +166,109 @@ export function MessageBubble({
         <div
           className={`flex flex-col ${isSent ? "items-end" : "items-start"} flex-1 min-w-0`}
         >
-          {parts.map((part, i) => {
-            const partFirst = i === 0 ? isFirstInGroup : false;
-            const partLast = i === parts.length - 1 ? isLastInGroup : false;
-            const radius = getBorderRadius(isSent, partFirst, partLast);
+          {hasReactions ? (
+            <Popover open={isReactionOpen} onOpenChange={setIsReactionOpen}>
+              <PopoverTrigger asChild>
+                <div
+                  className="cursor-pointer"
+                  aria-label="Show message reactions"
+                  title="Show reactions"
+                >
+                  {parts.map((part, i) => {
+                    const partFirst = i === 0 ? isFirstInGroup : false;
+                    const partLast = i === parts.length - 1 ? isLastInGroup : false;
+                    const radius = getBorderRadius(isSent, partFirst, partLast);
 
-            return (
-              <div
-                key={i}
-                className={`relative max-w-[70%] ${i > 0 ? "mt-0.5" : ""}`}
+                    return (
+                      <div
+                        key={i}
+                        className={`relative max-w-[70%] ${i > 0 ? "mt-0.5" : ""}`}
+                      >
+                        {part.kind === "media" ? (
+                          <div className={`overflow-hidden ${radius}`}>
+                            {part.attachments.map((att) => (
+                              <MediaItem key={att.rowid} attachment={att} />
+                            ))}
+                          </div>
+                        ) : (
+                          <div
+                            className={`flex flex-col overflow-hidden ${bubbleBg} ${radius}`}
+                          >
+                            {part.attachments.length > 0 && (
+                              <AttachmentList
+                                attachments={part.attachments}
+                                isSent={isSent}
+                              />
+                            )}
+                            {part.text && (
+                              <MessageText
+                                text={part.text}
+                                isSent={isSent}
+                                searchQuery={searchQuery}
+                              />
+                            )}
+                          </div>
+                        )}
+
+                        {i === parts.length - 1 && (
+                          <ReactionBadges
+                            reactions={activeReactions}
+                            isSent={isSent}
+                          />
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </PopoverTrigger>
+              <PopoverContent
+                align={isSent ? "end" : "start"}
+                className="w-64 p-3"
+                onOpenAutoFocus={(event) => event.preventDefault()}
               >
-                {part.kind === "media" ? (
-                  <div className={`overflow-hidden ${radius}`}>
-                    {part.attachments.map((att) => (
-                      <MediaItem key={att.rowid} attachment={att} />
-                    ))}
-                  </div>
-                ) : (
-                  <div
-                    className={`flex flex-col overflow-hidden ${bubbleBg} ${radius}`}
-                  >
-                    {part.attachments.length > 0 && (
-                      <AttachmentList
-                        attachments={part.attachments}
-                        isSent={isSent}
-                      />
-                    )}
-                    {part.text && (
-                      <MessageText
-                        text={part.text}
-                        isSent={isSent}
-                        searchQuery={searchQuery}
-                      />
-                    )}
-                  </div>
-                )}
+                <ReactionDetails reactions={activeReactions} />
+              </PopoverContent>
+            </Popover>
+          ) : (
+            parts.map((part, i) => {
+              const partFirst = i === 0 ? isFirstInGroup : false;
+              const partLast = i === parts.length - 1 ? isLastInGroup : false;
+              const radius = getBorderRadius(isSent, partFirst, partLast);
 
-                {i === parts.length - 1 && hasReactions && (
-                  <ReactionBadges
-                    reactions={message.reactions}
-                    isSent={isSent}
-                  />
-                )}
-              </div>
-            );
-          })}
+              return (
+                <div
+                  key={i}
+                  className={`relative max-w-[70%] ${i > 0 ? "mt-0.5" : ""}`}
+                >
+                  {part.kind === "media" ? (
+                    <div className={`overflow-hidden ${radius}`}>
+                      {part.attachments.map((att) => (
+                        <MediaItem key={att.rowid} attachment={att} />
+                      ))}
+                    </div>
+                  ) : (
+                    <div
+                      className={`flex flex-col overflow-hidden ${bubbleBg} ${radius}`}
+                    >
+                      {part.attachments.length > 0 && (
+                        <AttachmentList
+                          attachments={part.attachments}
+                          isSent={isSent}
+                        />
+                      )}
+                      {part.text && (
+                        <MessageText
+                          text={part.text}
+                          isSent={isSent}
+                          searchQuery={searchQuery}
+                        />
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          )}
         </div>
       </div>
 
@@ -206,7 +276,7 @@ export function MessageBubble({
         <span
           className={`text-[10px] text-muted-foreground mt-0.5 ${
             isSent ? "mr-1" : ""
-          } ${hasReactions ? "mt-3" : ""}`}
+          }`}
           style={
             !isSent && showAvatar ? { marginLeft: avatarGutter } : undefined
           }
@@ -495,6 +565,23 @@ const REACTION_EMOJI: Record<string, string> = {
   Questioned: "\u2753",
 };
 
+function isEmojiOnlyReaction(type: string): boolean {
+  if (!type.trim()) return false;
+  // Matches standalone pictographic emoji reactions (e.g. 😂, 😭, 🔥).
+  return /^\p{Extended_Pictographic}+$/u.test(type.trim());
+}
+
+function reactionDisplay(type: string): { emoji: string; label: string } {
+  const mapped = REACTION_EMOJI[type];
+  if (mapped) {
+    return { emoji: mapped, label: type };
+  }
+  if (isEmojiOnlyReaction(type)) {
+    return { emoji: type, label: "Reacted" };
+  }
+  return { emoji: "\u2753", label: type };
+}
+
 function ReactionBadges({
   reactions,
   isSent,
@@ -504,7 +591,6 @@ function ReactionBadges({
 }) {
   const groups = new Map<string, number>();
   for (const r of reactions) {
-    if (r.reaction_type.startsWith("Removed")) continue;
     groups.set(r.reaction_type, (groups.get(r.reaction_type) || 0) + 1);
   }
 
@@ -512,12 +598,14 @@ function ReactionBadges({
 
   return (
     <div
-      className={`flex gap-0.5 mt-[-4px] ${
-        isSent ? "justify-end mr-2" : "justify-start ml-2"
+      className={`absolute -top-2 z-10 flex gap-0.5 ${
+        isSent
+          ? "left-0 -translate-x-1/3 -translate-y-1/2"
+          : "right-0 translate-x-1/3 -translate-y-1/2"
       }`}
     >
       {Array.from(groups).map(([type, count]) => {
-        const emoji = REACTION_EMOJI[type] || type;
+        const { emoji } = reactionDisplay(type);
         return (
           <span
             key={type}
@@ -530,6 +618,44 @@ function ReactionBadges({
           </span>
         );
       })}
+    </div>
+  );
+}
+
+function ReactionDetails({ reactions }: { reactions: Reaction[] }) {
+  const groups = new Map<string, string[]>();
+
+  for (const reaction of reactions) {
+    const name = reaction.is_from_me ? "You" : reaction.sender || "Unknown";
+    const existing = groups.get(reaction.reaction_type) || [];
+    existing.push(name);
+    groups.set(reaction.reaction_type, existing);
+  }
+
+  return (
+    <div className="space-y-2">
+      <PopoverHeader>
+        <PopoverTitle>Reactions</PopoverTitle>
+      </PopoverHeader>
+      <div className="space-y-1.5">
+        {Array.from(groups).map(([type, names]) => {
+          const { emoji, label } = reactionDisplay(type);
+          return (
+            <div
+              key={type}
+              className="flex items-start gap-2 rounded-md bg-muted/40 px-2 py-1.5 text-sm"
+            >
+              <span className="text-base leading-none mt-0.5">{emoji}</span>
+              <div className="min-w-0">
+                <p className="font-medium">{label}</p>
+                <p className="text-xs text-muted-foreground break-words">
+                  {names.join(", ")}
+                </p>
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
