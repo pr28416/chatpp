@@ -8,7 +8,7 @@ interface ContactAvatarProps {
   className?: string;
 }
 
-export function ContactAvatar({
+export const ContactAvatar = React.memo(function ContactAvatar({
   handleId,
   name,
   size = 40,
@@ -60,4 +60,4 @@ export function ContactAvatar({
       )}
     </div>
   );
-}
+});
