@@ -62,7 +62,7 @@ const ChatRow = React.memo(function ChatRow({
   return (
     <button
       onClick={() => onSelectChat(chatId)}
-      className={`flex items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-accent border-b border-border/50 ${
+      className={`flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-accent border-b border-border/50 ${
         isSelected ? "bg-accent" : ""
       }`}
     >
