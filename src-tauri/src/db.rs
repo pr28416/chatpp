@@ -4,8 +4,9 @@ use imessage_database::tables::attachment::Attachment;
 use imessage_database::tables::messages::Message;
 use imessage_database::tables::table::Table;
 use rusqlite::Connection;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 /// Seconds between Unix epoch (1970-01-01) and Apple epoch (2001-01-01).
@@ -17,7 +18,10 @@ const NANOSECOND: i64 = 1_000_000_000;
 // ── Initialization ──────────────────────────────────────────────────────────
 
 /// Load handles, chat participants, and contacts from disk at startup.
-pub fn init_app_state(db_path: PathBuf) -> Result<AppState, Box<dyn std::error::Error>> {
+pub fn init_app_state(
+    db_path: PathBuf,
+    timeline_db_path: PathBuf,
+) -> Result<AppState, Box<dyn std::error::Error>> {
     let db = Connection::open_with_flags(&db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
 
     let contacts_data = load_contacts();
@@ -27,10 +31,13 @@ pub fn init_app_state(db_path: PathBuf) -> Result<AppState, Box<dyn std::error::
 
     Ok(AppState {
         db_path,
+        timeline_db_path,
         handles,
         chat_participants,
         contact_names: contacts_data.names,
         contact_photos: contacts_data.photos,
+        running_timeline_jobs: Arc::new(Mutex::new(HashSet::new())),
+        cancel_timeline_jobs: Arc::new(Mutex::new(HashSet::new())),
     })
 }
 
@@ -48,19 +55,26 @@ fn normalize_phone(raw: &str) -> String {
     }
 }
 
+pub fn normalize_handle_identifier(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if trimmed.contains('@') {
+        return trimmed.to_lowercase();
+    }
+    normalize_phone(trimmed)
+}
+
 pub fn resolve_handle_name(
     handle_id: &str,
     contact_names: &HashMap<String, String>,
 ) -> Option<String> {
-    if handle_id.contains('@') {
-        contact_names.get(&handle_id.to_lowercase()).cloned()
-    } else {
-        let normalized = normalize_phone(handle_id);
-        if normalized.is_empty() {
-            return None;
-        }
-        contact_names.get(&normalized).cloned()
+    let normalized = normalize_handle_identifier(handle_id);
+    if normalized.is_empty() {
+        return None;
     }
+    contact_names.get(&normalized).cloned()
 }
 
 pub struct ContactsData {
@@ -744,8 +758,7 @@ fn fetch_tapback_emojis(db: &Connection, rowids: &[i32]) -> HashMap<i32, String>
         placeholders.join(",")
     );
 
-    let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-        params.iter().map(|v| v.as_ref()).collect();
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|v| v.as_ref()).collect();
 
     let mut stmt = match db.prepare(&sql) {
         Ok(s) => s,
@@ -844,8 +857,7 @@ fn fetch_external_reactions(
     };
 
     for row in rows {
-        if let Ok((Some(assoc_guid), assoc_type, assoc_emoji, handle_id, is_from_me, date)) = row
-        {
+        if let Ok((Some(assoc_guid), assoc_type, assoc_emoji, handle_id, is_from_me, date)) = row {
             let target_guid = extract_target_guid(&assoc_guid);
             let sender = handle_id
                 .and_then(|hid| handles.get(&hid))
@@ -853,8 +865,7 @@ fn fetch_external_reactions(
                     resolve_handle_name(handle_id_str, contact_names)
                         .unwrap_or_else(|| handle_id_str.clone())
                 });
-            let reaction_type =
-                reaction_type_from_associated(assoc_type, assoc_emoji.as_deref());
+            let reaction_type = reaction_type_from_associated(assoc_type, assoc_emoji.as_deref());
 
             if reaction_type.starts_with("Removed") {
                 continue;
@@ -986,4 +997,46 @@ pub fn iso_to_apple_timestamp(iso: &str) -> i64 {
         }
     }
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_handle_identifier_phone_variants_match() {
+        assert_eq!(
+            normalize_handle_identifier("+1 (407) 717-8849"),
+            "+14077178849"
+        );
+        assert_eq!(normalize_handle_identifier("4077178849"), "+14077178849");
+        assert_eq!(
+            normalize_handle_identifier("1-407-717-8849"),
+            "+14077178849"
+        );
+    }
+
+    #[test]
+    fn normalize_handle_identifier_email_lowercases() {
+        assert_eq!(
+            normalize_handle_identifier("TeSt@Example.com"),
+            "test@example.com"
+        );
+    }
+
+    #[test]
+    fn resolve_handle_name_prefers_contact_map() {
+        let mut contacts = HashMap::new();
+        contacts.insert("+14077178849".to_string(), "Pranav Ramesh".to_string());
+        assert_eq!(
+            resolve_handle_name("407-717-8849", &contacts),
+            Some("Pranav Ramesh".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_handle_name_missing_returns_none() {
+        let contacts: HashMap<String, String> = HashMap::new();
+        assert_eq!(resolve_handle_name("407-717-8849", &contacts), None);
+    }
 }

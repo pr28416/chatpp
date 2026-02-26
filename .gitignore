@@ -11,3 +11,6 @@ src-tauri/**/target/
 
 # macOS
 .DS_Store
+
+.env.*
+.env

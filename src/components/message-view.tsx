@@ -7,7 +7,8 @@ import { MessageMinimap } from "./message-minimap";
 import { ReplyThreadOverlay } from "./reply-thread-overlay";
 import { DateRangeFilter } from "./date-range-filter";
 import { MessageSearch } from "./message-search";
-import { Search } from "lucide-react";
+import { TimelinePane } from "./timeline-pane";
+import { Search, ListTree } from "lucide-react";
 import { format, parseISO, isToday, isYesterday } from "date-fns";
 
 interface MessageViewProps {
@@ -130,6 +131,7 @@ export function MessageView({ chat }: MessageViewProps) {
   }, []);
 
   const [searchOpen, setSearchOpen] = React.useState(false);
+  const [timelineOpen, setTimelineOpen] = React.useState(false);
   const [searchQuery, setSearchQuery] = React.useState("");
   const [searchResults, setSearchResults] = React.useState<SearchResult[]>([]);
   const [highlightedRowid, setHighlightedRowid] = React.useState<number | null>(
@@ -148,6 +150,7 @@ export function MessageView({ chat }: MessageViewProps) {
       if ((e.metaKey || e.ctrlKey) && e.key === "f") {
         e.preventDefault();
         setSearchOpen(true);
+        setTimelineOpen(false);
       }
     };
     window.addEventListener("keydown", onKeyDown);
@@ -175,11 +178,11 @@ export function MessageView({ chat }: MessageViewProps) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const virtualizerRef = React.useRef<any>(null);
 
-  const handleJumpToResult = React.useCallback(
-    (result: SearchResult) => {
-      setHighlightedRowid(result.rowid);
+  const jumpToRowid = React.useCallback(
+    (rowid: number) => {
+      setHighlightedRowid(rowid);
 
-      const idx = displayMessages.findIndex((m) => m.rowid === result.rowid);
+      const idx = displayMessages.findIndex((m) => m.rowid === rowid);
       if (idx >= 0) {
         virtualizerRef.current?.scrollToIndex(idx, { align: "center" });
         return;
@@ -189,7 +192,7 @@ export function MessageView({ chat }: MessageViewProps) {
       const loadId = activeLoadIdRef.current;
 
       fetchMessages(chat.id, {
-        after_rowid: result.rowid - 1,
+        after_rowid: rowid - 1,
         limit: PAGE_LOAD_LIMIT,
       }).then((data) => {
         if (loadId !== activeLoadIdRef.current || data.messages.length === 0)
@@ -203,7 +206,7 @@ export function MessageView({ chat }: MessageViewProps) {
           if (loadId !== activeLoadIdRef.current) return;
           const newIdx = data.messages
             .filter((m) => !m.is_tapback)
-            .findIndex((m) => m.rowid === result.rowid);
+            .findIndex((m) => m.rowid === rowid);
           if (newIdx >= 0) {
             virtualizerRef.current?.scrollToIndex(newIdx, { align: "center" });
           }
@@ -213,8 +216,24 @@ export function MessageView({ chat }: MessageViewProps) {
     [displayMessages, chat],
   );
 
+  const handleJumpToResult = React.useCallback(
+    (result: SearchResult) => {
+      jumpToRowid(result.rowid);
+    },
+    [jumpToRowid],
+  );
+
+  const handleTimelineJump = React.useCallback(
+    (rowid: number) => {
+      setSearchOpen(false);
+      jumpToRowid(rowid);
+    },
+    [jumpToRowid],
+  );
+
   React.useEffect(() => {
     handleSearchClose();
+    setTimelineOpen(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chat]);
 
@@ -599,8 +618,30 @@ export function MessageView({ chat }: MessageViewProps) {
           />
           <button
             type="button"
-            onClick={() => setSearchOpen((p) => !p)}
-            className="p-1.5 rounded-md hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
+            onClick={() => {
+              setTimelineOpen((p) => !p);
+              setSearchOpen(false);
+            }}
+            className={`p-1.5 rounded-md transition-colors ${
+              timelineOpen
+                ? "bg-muted text-foreground"
+                : "hover:bg-muted text-muted-foreground hover:text-foreground"
+            }`}
+            aria-label="Toggle timeline pane"
+          >
+            <ListTree className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setSearchOpen((p) => !p);
+              setTimelineOpen(false);
+            }}
+            className={`p-1.5 rounded-md transition-colors ${
+              searchOpen
+                ? "bg-muted text-foreground"
+                : "hover:bg-muted text-muted-foreground hover:text-foreground"
+            }`}
             aria-label="Search messages"
           >
             <Search className="h-4 w-4" />
@@ -698,15 +739,19 @@ export function MessageView({ chat }: MessageViewProps) {
           </div>
         </div>
 
-        <MessageMinimap
-          messages={displayMessages}
-          scrollRef={scrollRef}
-          searchMatchRowids={searchMatchRowids}
-          topSentinelRef={topSentinelRef}
-          bottomSentinelRef={bottomSentinelRef}
-        />
+        {timelineOpen ? (
+          <TimelinePane chatId={chat.id} onJumpToRowid={handleTimelineJump} />
+        ) : (
+          <MessageMinimap
+            messages={displayMessages}
+            scrollRef={scrollRef}
+            searchMatchRowids={searchMatchRowids}
+            topSentinelRef={topSentinelRef}
+            bottomSentinelRef={bottomSentinelRef}
+          />
+        )}
 
-        {searchOpen && chat && (
+        {searchOpen && !timelineOpen && chat && (
           <MessageSearch
             chatId={chat.id}
             dateRange={dateRange}

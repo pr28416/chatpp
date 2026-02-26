@@ -74,3 +74,78 @@ export interface SearchResponse {
   results: SearchResult[];
   total: number;
 }
+
+export type TimelineLevel = 0 | 1 | 2 | 3;
+
+export interface TimelineNode {
+  id: number;
+  chat_id: number;
+  level: TimelineLevel;
+  parent_id: number | null;
+  ordinal: number;
+  start_rowid: number;
+  end_rowid: number;
+  representative_rowid: number;
+  start_ts: string;
+  end_ts: string;
+  title: string;
+  summary: string;
+  keywords: string[];
+  message_count: number;
+  media_count: number;
+  reaction_count: number;
+  reply_count: number;
+  confidence: number;
+  ai_rationale: string | null;
+  source_batch_id: string | null;
+  is_draft: boolean;
+}
+
+export interface TimelineNodeList {
+  nodes: TimelineNode[];
+}
+
+export interface TimelineLevelCounts {
+  level_0: number;
+  level_1: number;
+  level_2: number;
+  level_3: number;
+}
+
+export interface TimelineOverview {
+  chat_id: number;
+  indexed: boolean;
+  source_max_rowid: number;
+  indexed_max_rowid: number;
+  earliest_ts: string | null;
+  latest_ts: string | null;
+  level_counts: TimelineLevelCounts;
+  media_caption_coverage: number;
+  index_health: "complete" | "partial" | "failed" | "stale";
+  last_successful_run_at: string | null;
+}
+
+export interface TimelineJobState {
+  chat_id: number;
+  status: "idle" | "running" | "canceling" | "completed" | "failed" | "canceled";
+  phase:
+    | "idle"
+    | "scanning"
+    | "batch-index"
+    | "merge-pass"
+    | "media-pass"
+    | "canceling"
+    | "finalizing";
+  progress: number;
+  processed_messages: number;
+  total_messages: number;
+  started_at: string | null;
+  updated_at: string | null;
+  finished_at: string | null;
+  error: string | null;
+  openai_used: boolean;
+  degraded: boolean;
+  failed_batches: number;
+  completed_batches: number;
+  run_id: string | null;
+}
