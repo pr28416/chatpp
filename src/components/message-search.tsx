@@ -13,6 +13,9 @@ interface MessageSearchProps {
   onActiveResultChange: (result: SearchResult | null) => void;
   searchQuery: string;
   onSearchQueryChange: (query: string) => void;
+  scopeAll?: boolean;
+  onScopeAllChange?: (value: boolean) => void;
+  showHeader?: boolean;
 }
 
 export function MessageSearch({
@@ -24,15 +27,29 @@ export function MessageSearch({
   onActiveResultChange,
   searchQuery,
   onSearchQueryChange,
+  scopeAll: scopeAllProp,
+  onScopeAllChange,
+  showHeader = true,
 }: MessageSearchProps) {
   const inputRef = React.useRef<HTMLInputElement>(null);
   const [results, setResults] = React.useState<SearchResult[]>([]);
   const [activeIndex, setActiveIndex] = React.useState(-1);
   const [loading, setLoading] = React.useState(false);
-  const [scopeAll, setScopeAll] = React.useState(
+  const [scopeAllInternal, setScopeAllInternal] = React.useState(
     !dateRange.start && !dateRange.end,
   );
+  const scopeAll = scopeAllProp ?? scopeAllInternal;
   const resultsRef = React.useRef<HTMLDivElement>(null);
+
+  const setScopeAll = React.useCallback(
+    (value: boolean) => {
+      if (scopeAllProp === undefined) {
+        setScopeAllInternal(value);
+      }
+      onScopeAllChange?.(value);
+    },
+    [onScopeAllChange, scopeAllProp],
+  );
 
   React.useEffect(() => {
     inputRef.current?.focus();
@@ -123,18 +140,20 @@ export function MessageSearch({
   const hasDateScope = dateRange.start || dateRange.end;
 
   return (
-    <div className="w-72 shrink-0 border-l border-border bg-card/50 flex flex-col h-full">
-      <div className="flex items-center justify-between px-3 py-2.5 border-b border-border">
-        <span className="text-xs font-semibold text-foreground">Search</span>
-        <button
-          type="button"
-          onClick={onClose}
-          className="p-0.5 rounded hover:bg-muted transition-colors"
-          aria-label="Close search"
-        >
-          <X className="h-3.5 w-3.5" />
-        </button>
-      </div>
+    <div className="flex flex-col h-full">
+      {showHeader && (
+        <div className="flex items-center justify-between px-3 py-2.5 border-b border-border">
+          <span className="text-xs font-semibold text-foreground">Search</span>
+          <button
+            type="button"
+            onClick={onClose}
+            className="p-0.5 rounded hover:bg-muted transition-colors"
+            aria-label="Close search"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
 
       <div className="px-3 py-2 border-b border-border">
         <div className="flex items-center gap-2 rounded-md border border-input bg-background px-2.5 py-1.5">

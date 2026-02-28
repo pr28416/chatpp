@@ -35,10 +35,14 @@ fn main() {
             commands::cancel_timeline_index,
             commands::get_timeline_index_state,
             commands::get_timeline_nodes,
+            commands::get_timeline_node_occurrences,
+            commands::get_timeline_group_children,
             commands::get_timeline_overview,
             commands::get_timeline_related_nodes,
             commands::retry_timeline_failed_batches,
             commands::jump_anchor_context,
+            commands::get_timeline_node_message_rowids,
+            commands::get_timeline_node_message_rowids_by_node,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

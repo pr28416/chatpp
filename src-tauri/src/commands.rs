@@ -1,10 +1,13 @@
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 
 use crate::db;
 use crate::state::AppState;
 use crate::timeline_db;
 use crate::timeline_indexer;
-use crate::timeline_types::{TimelineJobState, TimelineNodeList, TimelineOverview};
+use crate::timeline_types::{
+    TimelineJobState, TimelineNodeList, TimelineNodeOccurrenceList, TimelineOverview,
+};
 use crate::types::*;
 use uuid::Uuid;
 
@@ -420,12 +423,34 @@ pub fn get_timeline_nodes_impl(
         "[timeline-cmd] get_nodes chat_id={} level={} parent_node_id={:?}",
         chat_id, level, parent_node_id
     );
-    if level > 3 {
-        return Err("Invalid timeline level; expected 0-3".to_string());
+    if level > 2 {
+        return Err("Level 3 is deprecated".to_string());
     }
 
     let conn = timeline_db::open_ro(&state.timeline_db_path).map_err(|e| e.to_string())?;
     timeline_db::get_nodes(&conn, chat_id, level, parent_node_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_timeline_node_occurrences(
+    state: tauri::State<'_, AppState>,
+    node_id: i64,
+) -> Result<TimelineNodeOccurrenceList, String> {
+    let conn = timeline_db::open_ro(&state.timeline_db_path).map_err(|e| e.to_string())?;
+    timeline_db::get_node_occurrences(&conn, node_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_timeline_group_children(
+    state: tauri::State<'_, AppState>,
+    node_id: i64,
+    child_level: u8,
+) -> Result<TimelineNodeList, String> {
+    if child_level > 2 {
+        return Err("Level 3 is deprecated".to_string());
+    }
+    let conn = timeline_db::open_ro(&state.timeline_db_path).map_err(|e| e.to_string())?;
+    timeline_db::get_group_children(&conn, node_id, child_level).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -522,6 +547,145 @@ pub fn jump_anchor_context(
         &state.contact_names,
     )
     .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_timeline_node_message_rowids(
+    state: tauri::State<'_, AppState>,
+    chat_id: i32,
+    start_rowid: i32,
+    end_rowid: i32,
+    limit: Option<i32>,
+) -> Result<Vec<i32>, String> {
+    let db = rusqlite::Connection::open_with_flags(
+        &state.db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .map_err(|e| e.to_string())?;
+
+    let effective_limit = limit.unwrap_or(5000).clamp(1, 20000);
+    let start = start_rowid.min(end_rowid);
+    let end = start_rowid.max(end_rowid);
+
+    let mut stmt = db
+        .prepare(
+            "SELECT m.ROWID
+             FROM message m
+             JOIN chat_message_join c ON c.message_id = m.ROWID
+             WHERE c.chat_id = ?1
+               AND m.ROWID BETWEEN ?2 AND ?3
+               AND (m.associated_message_type IS NULL OR m.associated_message_type = 0)
+             ORDER BY m.ROWID ASC
+             LIMIT ?4",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let rows = stmt
+        .query_map(
+            rusqlite::params![chat_id, start, end, effective_limit],
+            |row| row.get::<_, i32>(0),
+        )
+        .map_err(|e| e.to_string())?;
+
+    Ok(rows.flatten().collect())
+}
+
+#[tauri::command]
+pub fn get_timeline_node_message_rowids_by_node(
+    state: tauri::State<'_, AppState>,
+    chat_id: i32,
+    node_id: i64,
+    scope: Option<String>,
+    occurrence_ordinal: Option<i32>,
+    limit: Option<i32>,
+) -> Result<Vec<i32>, String> {
+    let source_db = rusqlite::Connection::open_with_flags(
+        &state.db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .map_err(|e| e.to_string())?;
+    let timeline_conn = timeline_db::open_ro(&state.timeline_db_path).map_err(|e| e.to_string())?;
+
+    let effective_limit = limit.unwrap_or(5000).clamp(1, 20000) as usize;
+    let selected_scope = scope.unwrap_or_else(|| "all_occurrences".to_string());
+
+    let occurrences = timeline_db::get_node_occurrences(&timeline_conn, node_id)
+        .map_err(|e| e.to_string())?
+        .occurrences;
+
+    let ranges: Vec<(i32, i32)> = if occurrences.is_empty() {
+        let mut stmt = timeline_conn
+            .prepare("SELECT start_rowid, end_rowid FROM timeline_nodes WHERE id = ?1")
+            .map_err(|e| e.to_string())?;
+        let mut rows = stmt.query([node_id]).map_err(|e| e.to_string())?;
+        if let Some(row) = rows.next().map_err(|e| e.to_string())? {
+            let start: i32 = row.get(0).map_err(|e| e.to_string())?;
+            let end: i32 = row.get(1).map_err(|e| e.to_string())?;
+            vec![(start.min(end), start.max(end))]
+        } else {
+            Vec::new()
+        }
+    } else if selected_scope == "single_occurrence" {
+        let ordinal = occurrence_ordinal
+            .ok_or_else(|| "occurrence_ordinal is required for single_occurrence".to_string())?;
+        let maybe = occurrences.iter().find(|o| o.ordinal == ordinal).map(|o| {
+            (
+                o.start_rowid.min(o.end_rowid),
+                o.start_rowid.max(o.end_rowid),
+            )
+        });
+        maybe.map(|r| vec![r]).ok_or_else(|| {
+            format!(
+                "Occurrence ordinal {} not found for node {}",
+                ordinal, node_id
+            )
+        })?
+    } else {
+        occurrences
+            .iter()
+            .map(|o| {
+                (
+                    o.start_rowid.min(o.end_rowid),
+                    o.start_rowid.max(o.end_rowid),
+                )
+            })
+            .collect()
+    };
+
+    if ranges.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut deduped = BTreeSet::<i32>::new();
+    for (start, end) in ranges {
+        let mut stmt = source_db
+            .prepare(
+                "SELECT m.ROWID
+                 FROM message m
+                 JOIN chat_message_join c ON c.message_id = m.ROWID
+                 WHERE c.chat_id = ?1
+                   AND m.ROWID BETWEEN ?2 AND ?3
+                   AND (m.associated_message_type IS NULL OR m.associated_message_type = 0)
+                 ORDER BY m.ROWID ASC",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(rusqlite::params![chat_id, start, end], |row| {
+                row.get::<_, i32>(0)
+            })
+            .map_err(|e| e.to_string())?;
+        for rowid in rows.flatten() {
+            deduped.insert(rowid);
+            if deduped.len() >= effective_limit {
+                break;
+            }
+        }
+        if deduped.len() >= effective_limit {
+            break;
+        }
+    }
+
+    Ok(deduped.into_iter().take(effective_limit).collect())
 }
 
 fn query_source_max_rowid(db_path: &std::path::Path, chat_id: i32) -> Result<i32, String> {
@@ -660,7 +824,6 @@ mod smoke_tests {
             overview_after.indexed_max_rowid
         );
 
-        let _ = get_timeline_nodes_impl(&state, chat_id, 3, None).expect("nodes level 3");
         let _ = get_timeline_nodes_impl(&state, chat_id, 2, None).expect("nodes level 2");
     }
 }

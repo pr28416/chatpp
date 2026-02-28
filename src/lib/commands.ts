@@ -3,6 +3,8 @@ import type {
   Chat,
   PaginatedMessages,
   SearchResponse,
+  TimelineNodeMessageScope,
+  TimelineOccurrenceList,
   TimelineJobState,
   TimelineLevel,
   TimelineNodeList,
@@ -120,4 +122,47 @@ export async function jumpAnchorContext(
   window = 80,
 ): Promise<PaginatedMessages> {
   return invoke("jump_anchor_context", { chatId, rowid, window });
+}
+
+export async function getTimelineNodeMessageRowids(
+  chatId: number,
+  startRowid: number,
+  endRowid: number,
+  limit = 5000,
+): Promise<number[]> {
+  return invoke("get_timeline_node_message_rowids", {
+    chatId,
+    startRowid,
+    endRowid,
+    limit,
+  });
+}
+
+export async function getTimelineNodeMessageRowidsByNode(
+  chatId: number,
+  nodeId: number,
+  scope: TimelineNodeMessageScope = "all_occurrences",
+  occurrenceOrdinal?: number,
+  limit = 5000,
+): Promise<number[]> {
+  return invoke("get_timeline_node_message_rowids_by_node", {
+    chatId,
+    nodeId,
+    scope,
+    occurrenceOrdinal,
+    limit,
+  });
+}
+
+export async function getTimelineNodeOccurrences(
+  nodeId: number,
+): Promise<TimelineOccurrenceList> {
+  return invoke("get_timeline_node_occurrences", { nodeId });
+}
+
+export async function getTimelineGroupChildren(
+  nodeId: number,
+  childLevel: TimelineLevel,
+): Promise<TimelineNodeList> {
+  return invoke("get_timeline_group_children", { nodeId, childLevel });
 }

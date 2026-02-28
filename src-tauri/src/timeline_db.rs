@@ -1,8 +1,9 @@
 use crate::timeline_types::{
     TimelineBatchRecord, TimelineEvidenceInsert, TimelineJobState, TimelineLevelCounts,
     TimelineMediaInsightInsert, TimelineMemoryInsert, TimelineMetaRecord, TimelineNodeInsert,
-    TimelineNodeLinkInsert, TimelineNodeList, TimelineNodeMemoryLinkInsert, TimelineNodeResponse,
-    TimelineOverview,
+    TimelineNodeLinkInsert, TimelineNodeList, TimelineNodeMembershipInsert,
+    TimelineNodeMemoryLinkInsert, TimelineNodeOccurrenceInsert, TimelineNodeOccurrenceList,
+    TimelineNodeOccurrenceResponse, TimelineNodeResponse, TimelineOverview,
 };
 use chrono::Utc;
 use rusqlite::Connection;
@@ -181,6 +182,40 @@ pub fn ensure_schema(conn: &Connection) -> TimelineResult<()> {
           PRIMARY KEY (node_id, memory_id)
         );
 
+        CREATE TABLE IF NOT EXISTS timeline_node_occurrences (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          node_id INTEGER NOT NULL,
+          ordinal INTEGER NOT NULL,
+          start_rowid INTEGER NOT NULL,
+          end_rowid INTEGER NOT NULL,
+          representative_rowid INTEGER NOT NULL,
+          start_ts TEXT NOT NULL,
+          end_ts TEXT NOT NULL,
+          message_count INTEGER NOT NULL,
+          media_count INTEGER NOT NULL,
+          reaction_count INTEGER NOT NULL,
+          reply_count INTEGER NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_node_occurrences_node_ordinal
+        ON timeline_node_occurrences(node_id, ordinal);
+
+        CREATE INDEX IF NOT EXISTS idx_node_occurrences_range
+        ON timeline_node_occurrences(start_rowid, end_rowid);
+
+        CREATE INDEX IF NOT EXISTS idx_node_occurrences_rep
+        ON timeline_node_occurrences(representative_rowid);
+
+        CREATE TABLE IF NOT EXISTS timeline_node_memberships (
+          parent_node_id INTEGER NOT NULL,
+          child_node_id INTEGER NOT NULL,
+          weight REAL NOT NULL,
+          reason TEXT,
+          PRIMARY KEY (parent_node_id, child_node_id)
+        );
+
         ",
     )?;
 
@@ -224,6 +259,23 @@ pub fn ensure_schema(conn: &Connection) -> TimelineResult<()> {
         [],
     );
     let _ = conn.execute("ALTER TABLE timeline_jobs ADD COLUMN run_id TEXT", []);
+
+    // Backfill a single occurrence for legacy rows that predate the occurrences table.
+    conn.execute(
+        "INSERT INTO timeline_node_occurrences (
+            node_id, ordinal, start_rowid, end_rowid, representative_rowid,
+            start_ts, end_ts, message_count, media_count, reaction_count, reply_count,
+            created_at, updated_at
+         )
+         SELECT n.id, 0, n.start_rowid, n.end_rowid, n.representative_rowid,
+                n.start_ts, n.end_ts, n.message_count, n.media_count, n.reaction_count, n.reply_count,
+                COALESCE(n.created_at, ?1), COALESCE(n.updated_at, ?1)
+         FROM timeline_nodes n
+         WHERE NOT EXISTS (
+           SELECT 1 FROM timeline_node_occurrences o WHERE o.node_id = n.id
+         )",
+        [now_iso()],
+    )?;
 
     Ok(())
 }
@@ -477,14 +529,14 @@ pub fn get_nodes(
                 reaction_count, reply_count, confidence, ai_rationale, source_batch_id, is_draft
          FROM timeline_nodes
          WHERE chat_id = ?1 AND level = ?2 AND parent_id = ?3
-         ORDER BY ordinal ASC, start_rowid ASC, id ASC"
+         ORDER BY ordinal ASC, end_rowid DESC, id ASC"
     } else {
         "SELECT id, chat_id, level, parent_id, ordinal, start_rowid, end_rowid, representative_rowid,
                 start_ts, end_ts, title, summary, keywords_json, message_count, media_count,
                 reaction_count, reply_count, confidence, ai_rationale, source_batch_id, is_draft
          FROM timeline_nodes
          WHERE chat_id = ?1 AND level = ?2
-         ORDER BY ordinal ASC, start_rowid ASC, id ASC"
+         ORDER BY ordinal ASC, end_rowid DESC, id ASC"
     };
 
     let mut stmt = conn.prepare(sql)?;
@@ -524,6 +576,86 @@ pub fn get_nodes(
         });
     }
 
+    Ok(TimelineNodeList { nodes })
+}
+
+pub fn get_node_occurrences(
+    conn: &Connection,
+    node_id: i64,
+) -> TimelineResult<TimelineNodeOccurrenceList> {
+    let mut stmt = conn.prepare(
+        "SELECT id, node_id, ordinal, start_rowid, end_rowid, representative_rowid,
+                start_ts, end_ts, message_count, media_count, reaction_count, reply_count
+         FROM timeline_node_occurrences
+         WHERE node_id = ?1
+         ORDER BY ordinal ASC, start_rowid ASC, id ASC",
+    )?;
+
+    let mut rows = stmt.query([node_id])?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next()? {
+        out.push(TimelineNodeOccurrenceResponse {
+            id: row.get(0)?,
+            node_id: row.get(1)?,
+            ordinal: row.get(2)?,
+            start_rowid: row.get(3)?,
+            end_rowid: row.get(4)?,
+            representative_rowid: row.get(5)?,
+            start_ts: row.get(6)?,
+            end_ts: row.get(7)?,
+            message_count: row.get(8)?,
+            media_count: row.get(9)?,
+            reaction_count: row.get(10)?,
+            reply_count: row.get(11)?,
+        });
+    }
+    Ok(TimelineNodeOccurrenceList { occurrences: out })
+}
+
+pub fn get_group_children(
+    conn: &Connection,
+    node_id: i64,
+    child_level: u8,
+) -> TimelineResult<TimelineNodeList> {
+    let mut stmt = conn.prepare(
+        "SELECT n.id, n.chat_id, n.level, n.parent_id, n.ordinal, n.start_rowid, n.end_rowid, n.representative_rowid,
+                n.start_ts, n.end_ts, n.title, n.summary, n.keywords_json, n.message_count, n.media_count,
+                n.reaction_count, n.reply_count, n.confidence, n.ai_rationale, n.source_batch_id, n.is_draft
+         FROM timeline_node_memberships m
+         JOIN timeline_nodes n ON n.id = m.child_node_id
+         WHERE m.parent_node_id = ?1 AND n.level = ?2
+         ORDER BY n.ordinal ASC, n.start_rowid ASC, n.id ASC",
+    )?;
+
+    let mut rows = stmt.query(rusqlite::params![node_id, child_level as i32])?;
+    let mut nodes = Vec::new();
+    while let Some(row) = rows.next()? {
+        let keywords_json: String = row.get(12)?;
+        let keywords = serde_json::from_str::<Vec<String>>(&keywords_json).unwrap_or_default();
+        nodes.push(TimelineNodeResponse {
+            id: row.get(0)?,
+            chat_id: row.get(1)?,
+            level: row.get::<_, i32>(2)? as u8,
+            parent_id: row.get(3)?,
+            ordinal: row.get(4)?,
+            start_rowid: row.get(5)?,
+            end_rowid: row.get(6)?,
+            representative_rowid: row.get(7)?,
+            start_ts: row.get(8)?,
+            end_ts: row.get(9)?,
+            title: row.get(10)?,
+            summary: row.get(11)?,
+            keywords,
+            message_count: row.get(13)?,
+            media_count: row.get(14)?,
+            reaction_count: row.get(15)?,
+            reply_count: row.get(16)?,
+            confidence: row.get::<_, f64>(17)? as f32,
+            ai_rationale: row.get(18)?,
+            source_batch_id: row.get(19)?,
+            is_draft: row.get::<_, i32>(20)? != 0,
+        });
+    }
     Ok(TimelineNodeList { nodes })
 }
 
@@ -608,7 +740,6 @@ pub fn get_overview(conn: &Connection, chat_id: i32) -> TimelineResult<TimelineO
                 0 => counts.level_0 = row.1,
                 1 => counts.level_1 = row.1,
                 2 => counts.level_2 = row.1,
-                3 => counts.level_3 = row.1,
                 _ => {}
             }
         }
@@ -657,6 +788,8 @@ pub fn replace_chat_timeline(
     conn: &mut Connection,
     chat_id: i32,
     nodes: &[TimelineNodeInsert],
+    occurrences: &[TimelineNodeOccurrenceInsert],
+    memberships: &[TimelineNodeMembershipInsert],
     evidence: &[TimelineEvidenceInsert],
     links: &[TimelineNodeLinkInsert],
     media: &[TimelineMediaInsightInsert],
@@ -665,6 +798,17 @@ pub fn replace_chat_timeline(
 ) -> TimelineResult<()> {
     let tx = conn.transaction()?;
 
+    tx.execute(
+        "DELETE FROM timeline_node_memberships
+         WHERE parent_node_id IN (SELECT id FROM timeline_nodes WHERE chat_id = ?1)
+            OR child_node_id IN (SELECT id FROM timeline_nodes WHERE chat_id = ?1)",
+        [chat_id],
+    )?;
+    tx.execute(
+        "DELETE FROM timeline_node_occurrences
+         WHERE node_id IN (SELECT id FROM timeline_nodes WHERE chat_id = ?1)",
+        [chat_id],
+    )?;
     tx.execute(
         "DELETE FROM timeline_node_memory_links
          WHERE node_id IN (SELECT id FROM timeline_nodes WHERE chat_id = ?1)",
@@ -749,6 +893,93 @@ pub fn replace_chat_timeline(
             rusqlite::params![child_id, parent_id, now_iso()],
         )?;
     }
+
+    for occurrence in occurrences {
+        if let Some(node_id) = id_map.get(&occurrence.node_temp_id) {
+            tx.execute(
+                "INSERT INTO timeline_node_occurrences (
+                    node_id, ordinal, start_rowid, end_rowid, representative_rowid,
+                    start_ts, end_ts, message_count, media_count, reaction_count, reply_count,
+                    created_at, updated_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                rusqlite::params![
+                    node_id,
+                    occurrence.ordinal,
+                    occurrence.start_rowid,
+                    occurrence.end_rowid,
+                    occurrence.representative_rowid,
+                    occurrence.start_ts,
+                    occurrence.end_ts,
+                    occurrence.message_count,
+                    occurrence.media_count,
+                    occurrence.reaction_count,
+                    occurrence.reply_count,
+                    now_iso(),
+                    now_iso(),
+                ],
+            )?;
+        }
+    }
+
+    for membership in memberships {
+        if let (Some(parent_id), Some(child_id)) = (
+            id_map.get(&membership.parent_temp_id),
+            id_map.get(&membership.child_temp_id),
+        ) {
+            tx.execute(
+                "INSERT OR REPLACE INTO timeline_node_memberships (parent_node_id, child_node_id, weight, reason)
+                 VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![parent_id, child_id, membership.weight, membership.reason],
+            )?;
+        }
+    }
+
+    // Derive compatibility bounds on nodes from all occurrences.
+    tx.execute(
+        "UPDATE timeline_nodes
+         SET start_rowid = (
+               SELECT MIN(o.start_rowid) FROM timeline_node_occurrences o WHERE o.node_id = timeline_nodes.id
+             ),
+             end_rowid = (
+               SELECT MAX(o.end_rowid) FROM timeline_node_occurrences o WHERE o.node_id = timeline_nodes.id
+             ),
+             representative_rowid = COALESCE((
+               SELECT o.representative_rowid
+               FROM timeline_node_occurrences o
+               WHERE o.node_id = timeline_nodes.id
+               ORDER BY o.ordinal ASC, o.id ASC
+               LIMIT 1
+             ), representative_rowid),
+             start_ts = COALESCE((
+               SELECT o.start_ts
+               FROM timeline_node_occurrences o
+               WHERE o.node_id = timeline_nodes.id
+               ORDER BY o.start_rowid ASC, o.id ASC
+               LIMIT 1
+             ), start_ts),
+             end_ts = COALESCE((
+               SELECT o.end_ts
+               FROM timeline_node_occurrences o
+               WHERE o.node_id = timeline_nodes.id
+               ORDER BY o.end_rowid DESC, o.id DESC
+               LIMIT 1
+             ), end_ts),
+             message_count = COALESCE((
+               SELECT SUM(o.message_count) FROM timeline_node_occurrences o WHERE o.node_id = timeline_nodes.id
+             ), message_count),
+             media_count = COALESCE((
+               SELECT SUM(o.media_count) FROM timeline_node_occurrences o WHERE o.node_id = timeline_nodes.id
+             ), media_count),
+             reaction_count = COALESCE((
+               SELECT SUM(o.reaction_count) FROM timeline_node_occurrences o WHERE o.node_id = timeline_nodes.id
+             ), reaction_count),
+             reply_count = COALESCE((
+               SELECT SUM(o.reply_count) FROM timeline_node_occurrences o WHERE o.node_id = timeline_nodes.id
+             ), reply_count),
+             updated_at = ?1
+         WHERE chat_id = ?2",
+        rusqlite::params![now_iso(), chat_id],
+    )?;
 
     for ev in evidence {
         if let Some(node_id) = id_map.get(&ev.node_temp_id) {

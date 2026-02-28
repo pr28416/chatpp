@@ -75,7 +75,28 @@ export interface SearchResponse {
   total: number;
 }
 
-export type TimelineLevel = 0 | 1 | 2 | 3;
+export type SidebarMode = "chats" | "search" | "timeline";
+
+export interface PerChatSearchUiState {
+  searchQuery: string;
+  dateRange: DateRange;
+  scopeAll: boolean;
+}
+
+export interface PerChatTimelineUiState {
+  view: "topics_list" | "topic_detail";
+  topicQuery: string;
+  selectedTopicId: number | null;
+  selectedDetailNodeId: number | null;
+  expandedSubtopicIds: Record<number, boolean>;
+  selectedOccurrenceIdxByNode: Record<number, number>;
+}
+
+export interface WorkspaceLayoutState {
+  contextPaneWidth: number;
+}
+
+export type TimelineLevel = 0 | 1 | 2;
 
 export interface TimelineNode {
   id: number;
@@ -105,11 +126,31 @@ export interface TimelineNodeList {
   nodes: TimelineNode[];
 }
 
+export interface TimelineOccurrence {
+  id: number;
+  node_id: number;
+  ordinal: number;
+  start_rowid: number;
+  end_rowid: number;
+  representative_rowid: number;
+  start_ts: string;
+  end_ts: string;
+  message_count: number;
+  media_count: number;
+  reaction_count: number;
+  reply_count: number;
+}
+
+export interface TimelineOccurrenceList {
+  occurrences: TimelineOccurrence[];
+}
+
+export type TimelineNodeMessageScope = "all_occurrences" | "single_occurrence";
+
 export interface TimelineLevelCounts {
   level_0: number;
   level_1: number;
   level_2: number;
-  level_3: number;
 }
 
 export interface TimelineOverview {
@@ -130,10 +171,12 @@ export interface TimelineJobState {
   status: "idle" | "running" | "canceling" | "completed" | "failed" | "canceled";
   phase:
     | "idle"
-    | "scanning"
-    | "batch-index"
-    | "merge-pass"
-    | "media-pass"
+    | "loading"
+    | "image-enrichment"
+    | "l0-generation"
+    | "l1-aggregate"
+    | "l2-aggregate"
+    | "persist"
     | "canceling"
     | "finalizing";
   progress: number;

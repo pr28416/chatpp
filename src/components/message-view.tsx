@@ -1,18 +1,21 @@
 import * as React from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { Message, DateRange, Chat, SearchResult, PaginatedMessages } from "@/lib/types";
+import { format, isToday, isYesterday, parseISO } from "date-fns";
+
+import type { Chat, DateRange, Message, PaginatedMessages } from "@/lib/types";
 import { fetchMessages } from "@/lib/commands";
 import { MessageBubble } from "./message-bubble";
 import { MessageMinimap } from "./message-minimap";
 import { ReplyThreadOverlay } from "./reply-thread-overlay";
-import { DateRangeFilter } from "./date-range-filter";
-import { MessageSearch } from "./message-search";
-import { TimelinePane } from "./timeline-pane";
-import { Search, ListTree } from "lucide-react";
-import { format, parseISO, isToday, isYesterday } from "date-fns";
 
 interface MessageViewProps {
   chat: Chat | null;
+  dateRange: DateRange;
+  searchQuery?: string;
+  searchMatchRowids?: Set<number>;
+  requestedJumpRowid?: number | null;
+  onJumpHandled?: (rowid: number) => void;
+  onHighlightChange?: (rowid: number | null) => void;
 }
 
 interface MessageCacheEntry {
@@ -28,8 +31,7 @@ const INITIAL_LOAD_LIMIT = 60;
 const PAGE_LOAD_LIMIT = 10;
 const messageCache = new Map<string, MessageCacheEntry>();
 const IS_DEV =
-  ((import.meta as ImportMeta & { env?: { DEV?: boolean } }).env?.DEV ??
-    false) === true;
+  ((import.meta as ImportMeta & { env?: { DEV?: boolean } }).env?.DEV ?? false) === true;
 
 function getDateRangeKey(dateRange: DateRange): string {
   const start = dateRange.start ?? "";
@@ -50,7 +52,6 @@ function getCachedMessages(cacheKey: string): MessageCacheEntry | null {
     return null;
   }
 
-  // Refresh insertion order to keep LRU semantics.
   messageCache.delete(cacheKey);
   messageCache.set(cacheKey, entry);
   return entry;
@@ -80,21 +81,28 @@ function setCachedMessages(cacheKey: string, value: MessageCacheEntry) {
 
 function maybeLogDev(message: string, ...args: unknown[]) {
   if (IS_DEV) {
+    // eslint-disable-next-line no-console
     console.log(message, ...args);
   }
 }
 
-export function MessageView({ chat }: MessageViewProps) {
+export function MessageView({
+  chat,
+  dateRange,
+  searchQuery,
+  searchMatchRowids,
+  requestedJumpRowid,
+  onJumpHandled,
+  onHighlightChange,
+}: MessageViewProps) {
   const [messages, setMessages] = React.useState<Message[]>([]);
-  const [dateRange, setDateRange] = React.useState<DateRange>({});
   const [hasPrevious, setHasPrevious] = React.useState(false);
   const [hasMore, setHasMore] = React.useState(false);
   const [loading, setLoading] = React.useState(false);
   const [loadingDirection, setLoadingDirection] = React.useState<
     "initial" | "previous" | "more" | null
   >(null);
-  const [isInitialLoadComplete, setIsInitialLoadComplete] =
-    React.useState(false);
+  const [isInitialLoadComplete, setIsInitialLoadComplete] = React.useState(false);
 
   const scrollRef = React.useRef<HTMLDivElement>(null);
   const topSentinelRef = React.useRef<HTMLDivElement>(null);
@@ -107,10 +115,9 @@ export function MessageView({ chat }: MessageViewProps) {
   const initialFetchCountRef = React.useRef(0);
   const fetchWindowTimerRef = React.useRef<number | null>(null);
 
-  const displayMessages = React.useMemo(
-    () => messages.filter((m) => !m.is_tapback),
-    [messages],
-  );
+  const [highlightedRowid, setHighlightedRowid] = React.useState<number | null>(null);
+
+  const displayMessages = React.useMemo(() => messages.filter((m) => !m.is_tapback), [messages]);
 
   const guidMap = React.useMemo(() => {
     const map = new Map<string, Message>();
@@ -120,9 +127,7 @@ export function MessageView({ chat }: MessageViewProps) {
     return map;
   }, [messages]);
 
-  const [replyThreadGuid, setReplyThreadGuid] = React.useState<string | null>(
-    null,
-  );
+  const [replyThreadGuid, setReplyThreadGuid] = React.useState<string | null>(null);
   const handleReplyClick = React.useCallback((originGuid: string) => {
     setReplyThreadGuid(originGuid);
   }, []);
@@ -130,50 +135,7 @@ export function MessageView({ chat }: MessageViewProps) {
     setReplyThreadGuid(null);
   }, []);
 
-  const [searchOpen, setSearchOpen] = React.useState(false);
-  const [timelineOpen, setTimelineOpen] = React.useState(false);
-  const [searchQuery, setSearchQuery] = React.useState("");
-  const [searchResults, setSearchResults] = React.useState<SearchResult[]>([]);
-  const [highlightedRowid, setHighlightedRowid] = React.useState<number | null>(
-    null,
-  );
-
-  const searchMatchRowids = React.useMemo(() => {
-    if (searchResults.length === 0) return undefined;
-    return new Set(searchResults.map((r) => r.rowid));
-  }, [searchResults]);
-
   const canAutoPaginate = isInitialLoadComplete && !loading;
-
-  React.useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === "f") {
-        e.preventDefault();
-        setSearchOpen(true);
-        setTimelineOpen(false);
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
-
-  const handleSearchClose = React.useCallback(() => {
-    setSearchOpen(false);
-    setSearchQuery("");
-    setSearchResults([]);
-    setHighlightedRowid(null);
-  }, []);
-
-  const handleSearchResults = React.useCallback((results: SearchResult[]) => {
-    setSearchResults(results);
-  }, []);
-
-  const handleActiveResultChange = React.useCallback(
-    (result: SearchResult | null) => {
-      setHighlightedRowid(result?.rowid ?? null);
-    },
-    [],
-  );
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const virtualizerRef = React.useRef<any>(null);
@@ -195,8 +157,7 @@ export function MessageView({ chat }: MessageViewProps) {
         after_rowid: rowid - 1,
         limit: PAGE_LOAD_LIMIT,
       }).then((data) => {
-        if (loadId !== activeLoadIdRef.current || data.messages.length === 0)
-          return;
+        if (loadId !== activeLoadIdRef.current || data.messages.length === 0) return;
 
         setMessages(data.messages);
         setHasPrevious(true);
@@ -213,28 +174,22 @@ export function MessageView({ chat }: MessageViewProps) {
         }, 50);
       });
     },
-    [displayMessages, chat],
-  );
-
-  const handleJumpToResult = React.useCallback(
-    (result: SearchResult) => {
-      jumpToRowid(result.rowid);
-    },
-    [jumpToRowid],
-  );
-
-  const handleTimelineJump = React.useCallback(
-    (rowid: number) => {
-      setSearchOpen(false);
-      jumpToRowid(rowid);
-    },
-    [jumpToRowid],
+    [chat, displayMessages],
   );
 
   React.useEffect(() => {
-    handleSearchClose();
-    setTimelineOpen(false);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (requestedJumpRowid == null) return;
+    jumpToRowid(requestedJumpRowid);
+    onJumpHandled?.(requestedJumpRowid);
+  }, [jumpToRowid, onJumpHandled, requestedJumpRowid]);
+
+  React.useEffect(() => {
+    onHighlightChange?.(highlightedRowid);
+  }, [highlightedRowid, onHighlightChange]);
+
+  React.useEffect(() => {
+    setReplyThreadGuid(null);
+    setHighlightedRowid(null);
   }, [chat]);
 
   const showSeparator = React.useMemo(() => {
@@ -256,17 +211,10 @@ export function MessageView({ chat }: MessageViewProps) {
   const groupInfo = React.useMemo(() => {
     return displayMessages.map((msg, i) => {
       const prev = i > 0 ? displayMessages[i - 1] : null;
-      const next =
-        i < displayMessages.length - 1 ? displayMessages[i + 1] : null;
+      const next = i < displayMessages.length - 1 ? displayMessages[i + 1] : null;
       return {
-        isFirstInGroup:
-          !prev ||
-          prev.is_from_me !== msg.is_from_me ||
-          prev.sender !== msg.sender,
-        isLastInGroup:
-          !next ||
-          next.is_from_me !== msg.is_from_me ||
-          next.sender !== msg.sender,
+        isFirstInGroup: !prev || prev.is_from_me !== msg.is_from_me || prev.sender !== msg.sender,
+        isLastInGroup: !next || next.is_from_me !== msg.is_from_me || next.sender !== msg.sender,
       };
     });
   }, [displayMessages]);
@@ -277,9 +225,7 @@ export function MessageView({ chat }: MessageViewProps) {
     estimateSize: (index) => {
       const msg = displayMessages[index];
       const hasMedia = msg?.attachments?.some(
-        (a) =>
-          a.mime_type?.startsWith("image/") ||
-          a.mime_type?.startsWith("video/"),
+        (a) => a.mime_type?.startsWith("image/") || a.mime_type?.startsWith("video/"),
       );
       if (hasMedia) return 350;
       const len = msg?.text?.length || 0;
@@ -313,8 +259,7 @@ export function MessageView({ chat }: MessageViewProps) {
       };
 
       if (!hasDateRange) {
-        const visibleTargetIndex =
-          data.messages.filter((m) => !m.is_tapback).length - 1;
+        const visibleTargetIndex = data.messages.filter((m) => !m.is_tapback).length - 1;
 
         const alignToBottom = (attempt: number) => {
           if (options.loadId !== activeLoadIdRef.current) return;
@@ -433,6 +378,7 @@ export function MessageView({ chat }: MessageViewProps) {
       })
       .catch((err) => {
         if (loadId !== activeLoadIdRef.current) return;
+        // eslint-disable-next-line no-console
         console.error("Failed to fetch messages:", err);
         setLoading(false);
         setLoadingDirection(null);
@@ -456,13 +402,7 @@ export function MessageView({ chat }: MessageViewProps) {
   });
 
   const loadPrevious = React.useCallback(async () => {
-    if (
-      !chat ||
-      messages.length === 0 ||
-      busyRef.current ||
-      !hasPrevious ||
-      !canAutoPaginate
-    ) {
+    if (!chat || messages.length === 0 || busyRef.current || !hasPrevious || !canAutoPaginate) {
       return;
     }
 
@@ -487,6 +427,7 @@ export function MessageView({ chat }: MessageViewProps) {
       setHasPrevious(data.has_previous);
     } catch (err) {
       if (loadId === activeLoadIdRef.current) {
+        // eslint-disable-next-line no-console
         console.error("Failed to fetch previous messages:", err);
       }
     } finally {
@@ -498,13 +439,7 @@ export function MessageView({ chat }: MessageViewProps) {
   }, [chat, messages, hasPrevious, canAutoPaginate]);
 
   const loadMore = React.useCallback(async () => {
-    if (
-      !chat ||
-      messages.length === 0 ||
-      busyRef.current ||
-      !hasMore ||
-      !canAutoPaginate
-    ) {
+    if (!chat || messages.length === 0 || busyRef.current || !hasMore || !canAutoPaginate) {
       return;
     }
 
@@ -526,6 +461,7 @@ export function MessageView({ chat }: MessageViewProps) {
       setHasMore(data.has_more);
     } catch (err) {
       if (loadId === activeLoadIdRef.current) {
+        // eslint-disable-next-line no-console
         console.error("Failed to fetch more messages:", err);
       }
     } finally {
@@ -555,7 +491,7 @@ export function MessageView({ chat }: MessageViewProps) {
     const observer = new IntersectionObserver(
       (entries) => {
         if (entries[0]?.isIntersecting) {
-          loadPreviousRef.current();
+          void loadPreviousRef.current();
         }
       },
       { root, threshold: 0.1 },
@@ -574,7 +510,7 @@ export function MessageView({ chat }: MessageViewProps) {
     const observer = new IntersectionObserver(
       (entries) => {
         if (entries[0]?.isIntersecting) {
-          loadMoreRef.current();
+          void loadMoreRef.current();
         }
       },
       { root, threshold: 0.1 },
@@ -586,66 +522,23 @@ export function MessageView({ chat }: MessageViewProps) {
   if (!chat) {
     return (
       <div className="flex-1 flex items-center justify-center bg-muted/30">
-        <p className="text-muted-foreground">
-          Select a conversation to view messages
-        </p>
+        <p className="text-muted-foreground">Select a conversation to view messages</p>
       </div>
     );
   }
 
-  const chatName =
-    chat.display_name || chat.participants.join(", ") || chat.chat_identifier;
+  const chatName = chat.display_name || chat.participants.join(", ") || chat.chat_identifier;
   const isGroupChat = chat.participants.length > 1;
   const virtualItems = virtualizer.getVirtualItems();
 
   return (
     <div className="flex-1 flex flex-col h-full bg-background">
-      <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-card">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-card/70">
         <div>
-          <h2 className="text-base font-semibold text-foreground">
-            {chatName}
-          </h2>
+          <h2 className="text-base font-semibold text-foreground">{chatName}</h2>
           {isGroupChat && (
-            <p className="text-xs text-muted-foreground">
-              {chat.participants.length} participants
-            </p>
+            <p className="text-xs text-muted-foreground">{chat.participants.length} participants</p>
           )}
-        </div>
-        <div className="flex items-center gap-2">
-          <DateRangeFilter
-            dateRange={dateRange}
-            onDateRangeChange={setDateRange}
-          />
-          <button
-            type="button"
-            onClick={() => {
-              setTimelineOpen((p) => !p);
-              setSearchOpen(false);
-            }}
-            className={`p-1.5 rounded-md transition-colors ${
-              timelineOpen
-                ? "bg-muted text-foreground"
-                : "hover:bg-muted text-muted-foreground hover:text-foreground"
-            }`}
-            aria-label="Toggle timeline pane"
-          >
-            <ListTree className="h-4 w-4" />
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setSearchOpen((p) => !p);
-              setTimelineOpen(false);
-            }}
-            className={`p-1.5 rounded-md transition-colors ${
-              searchOpen
-                ? "bg-muted text-foreground"
-                : "hover:bg-muted text-muted-foreground hover:text-foreground"
-            }`}
-            aria-label="Search messages"
-          >
-            <Search className="h-4 w-4" />
-          </button>
         </div>
       </div>
 
@@ -660,19 +553,14 @@ export function MessageView({ chat }: MessageViewProps) {
 
             {loading && loadingDirection === "initial" && (
               <div className="flex justify-center py-8">
-                <p className="text-sm text-muted-foreground">
-                  Loading messages...
-                </p>
+                <p className="text-sm text-muted-foreground">Loading messages...</p>
               </div>
             )}
 
             {!loading && displayMessages.length === 0 && (
               <div className="flex justify-center py-8">
                 <p className="text-sm text-muted-foreground">
-                  No messages found
-                  {dateRange.start || dateRange.end
-                    ? " in this date range"
-                    : ""}
+                  No messages found{dateRange.start || dateRange.end ? " in this date range" : ""}
                 </p>
               </div>
             )}
@@ -709,9 +597,7 @@ export function MessageView({ chat }: MessageViewProps) {
                         ref={virtualizer.measureElement}
                         className="px-4"
                       >
-                        {showSeparator[idx] && (
-                          <InlineDateSeparator dateStr={message.date} />
-                        )}
+                        {showSeparator[idx] && <InlineDateSeparator dateStr={message.date} />}
                         <MessageBubble
                           message={message}
                           showSender={isGroupChat}
@@ -720,7 +606,7 @@ export function MessageView({ chat }: MessageViewProps) {
                           replyToMessage={replyTo}
                           onReplyClick={handleReplyClick}
                           isHighlighted={message.rowid === highlightedRowid}
-                          searchQuery={searchOpen ? searchQuery : undefined}
+                          searchQuery={searchQuery}
                         />
                       </div>
                     );
@@ -739,30 +625,13 @@ export function MessageView({ chat }: MessageViewProps) {
           </div>
         </div>
 
-        {timelineOpen ? (
-          <TimelinePane chatId={chat.id} onJumpToRowid={handleTimelineJump} />
-        ) : (
-          <MessageMinimap
-            messages={displayMessages}
-            scrollRef={scrollRef}
-            searchMatchRowids={searchMatchRowids}
-            topSentinelRef={topSentinelRef}
-            bottomSentinelRef={bottomSentinelRef}
-          />
-        )}
-
-        {searchOpen && !timelineOpen && chat && (
-          <MessageSearch
-            chatId={chat.id}
-            dateRange={dateRange}
-            onJumpToResult={handleJumpToResult}
-            onSearchResults={handleSearchResults}
-            onClose={handleSearchClose}
-            onActiveResultChange={handleActiveResultChange}
-            searchQuery={searchQuery}
-            onSearchQueryChange={setSearchQuery}
-          />
-        )}
+        <MessageMinimap
+          messages={displayMessages}
+          scrollRef={scrollRef}
+          searchMatchRowids={searchMatchRowids}
+          topSentinelRef={topSentinelRef}
+          bottomSentinelRef={bottomSentinelRef}
+        />
       </div>
 
       <ReplyThreadOverlay
@@ -784,19 +653,8 @@ function LoadingSpinner() {
       fill="none"
       viewBox="0 0 24 24"
     >
-      <circle
-        className="opacity-25"
-        cx="12"
-        cy="12"
-        r="10"
-        stroke="currentColor"
-        strokeWidth="4"
-      />
-      <path
-        className="opacity-75"
-        fill="currentColor"
-        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-      />
+      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
     </svg>
   );
 }
