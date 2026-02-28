@@ -11,23 +11,24 @@
     "tauri:build": "CI=false npx tauri build --bundles app"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2",
     "@tanstack/react-virtual": "^3.13.18",
+    "@tauri-apps/api": "^2",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "date-fns": "^4.1.0",
     "framer-motion": "^12.34.0",
     "lucide-react": "^0.563.0",
-    "react-resizable-panels": "^2.1.7",
     "radix-ui": "^1.4.3",
     "react": "^19.0.0",
     "react-day-picker": "^9.13.2",
     "react-dom": "^19.0.0",
-    "tailwind-merge": "^3.4.0"
+    "react-resizable-panels": "^2.1.7",
+    "tailwind-merge": "^3.4.0",
+    "tauri-plugin-liquid-glass-api": "^0.1.6"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2",
     "@tailwindcss/vite": "^4",
+    "@tauri-apps/cli": "^2",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@vitejs/plugin-react": "^4.5.2",

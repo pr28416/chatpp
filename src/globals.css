@@ -120,6 +120,13 @@
   * {
     @apply border-border outline-ring/50;
   }
+
+  html.tauri-glass,
+  body.tauri-glass,
+  body.tauri-glass #root {
+    background: transparent;
+  }
+
   body {
     @apply bg-background text-foreground;
   }

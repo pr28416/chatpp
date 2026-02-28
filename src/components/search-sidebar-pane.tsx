@@ -38,7 +38,7 @@ export function SearchSidebarPane({
   }
 
   return (
-    <div className="h-full flex flex-col bg-card/30 border-r border-border">
+    <div className="h-full flex flex-col bg-transparent">
       <div className="px-3 py-2.5 border-b border-border flex items-center justify-between gap-2">
         <h3 className="text-xs font-semibold text-foreground">Search</h3>
       </div>

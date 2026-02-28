@@ -2143,6 +2143,36 @@
           "type": "string",
           "const": "core:window:deny-unminimize",
           "markdownDescription": "Denies the unminimize command without any pre-configured scope."
+        },
+        {
+          "description": "Default permissions for the liquid-glass plugin\n#### This default permission set includes:\n\n- `allow-is-glass-supported`\n- `allow-set-liquid-glass-effect`",
+          "type": "string",
+          "const": "liquid-glass:default",
+          "markdownDescription": "Default permissions for the liquid-glass plugin\n#### This default permission set includes:\n\n- `allow-is-glass-supported`\n- `allow-set-liquid-glass-effect`"
+        },
+        {
+          "description": "Enables the is_glass_supported command without any pre-configured scope.",
+          "type": "string",
+          "const": "liquid-glass:allow-is-glass-supported",
+          "markdownDescription": "Enables the is_glass_supported command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_liquid_glass_effect command without any pre-configured scope.",
+          "type": "string",
+          "const": "liquid-glass:allow-set-liquid-glass-effect",
+          "markdownDescription": "Enables the set_liquid_glass_effect command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the is_glass_supported command without any pre-configured scope.",
+          "type": "string",
+          "const": "liquid-glass:deny-is-glass-supported",
+          "markdownDescription": "Denies the is_glass_supported command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_liquid_glass_effect command without any pre-configured scope.",
+          "type": "string",
+          "const": "liquid-glass:deny-set-liquid-glass-effect",
+          "markdownDescription": "Denies the set_liquid_glass_effect command without any pre-configured scope."
         }
       ]
     },

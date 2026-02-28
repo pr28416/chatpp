@@ -156,7 +156,7 @@ export function WorkspaceShell({
       </div>
 
       <div
-        className="h-full shrink-0 border-r border-border"
+        className="h-full shrink-0 border-r border-border bg-card/20"
         style={{ width: clamp(contextPaneWidth, CONTEXT_MIN, maxContextWidth) }}
       >
         <ContextPaneHost
@@ -185,7 +185,7 @@ export function WorkspaceShell({
         className="cursor-col-resize hover:bg-border/80 transition-colors"
       />
 
-      <div className="min-w-0 flex-1">
+      <div className="min-w-0 flex-1 bg-background/20">
         <MessageView
           chat={selectedChat}
           dateRange={dateRange}

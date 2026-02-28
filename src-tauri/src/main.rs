@@ -16,7 +16,7 @@ use tauri::Manager;
 fn main() {
     load_env_files();
 
-    tauri::Builder::default()
+    add_platform_plugins(tauri::Builder::default())
         .manage(state::init_app_state())
         .register_uri_scheme_protocol("localfile", |ctx, request| {
             let handle = ctx.app_handle();
@@ -46,6 +46,18 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+fn add_platform_plugins(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
+    #[cfg(target_os = "macos")]
+    {
+        return builder.plugin(tauri_plugin_liquid_glass::init());
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        builder
+    }
 }
 
 fn load_env_files() {

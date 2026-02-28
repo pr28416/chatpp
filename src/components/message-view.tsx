@@ -521,7 +521,7 @@ export function MessageView({
 
   if (!chat) {
     return (
-      <div className="flex-1 flex items-center justify-center bg-muted/30">
+      <div className="flex-1 flex items-center justify-center bg-transparent">
         <p className="text-muted-foreground">Select a conversation to view messages</p>
       </div>
     );
@@ -532,8 +532,8 @@ export function MessageView({
   const virtualItems = virtualizer.getVirtualItems();
 
   return (
-    <div className="flex-1 flex flex-col h-full bg-background">
-      <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-card/70">
+    <div className="flex-1 flex flex-col h-full bg-transparent">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-transparent">
         <div>
           <h2 className="text-base font-semibold text-foreground">{chatName}</h2>
           {isGroupChat && (

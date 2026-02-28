@@ -306,7 +306,7 @@ export function MessageMinimap({
   return (
     <div
       ref={containerRef}
-      className="relative w-12 shrink-0 border-l border-border bg-background cursor-pointer select-none overflow-hidden"
+      className="relative w-12 shrink-0 border-l border-border bg-transparent cursor-pointer select-none overflow-hidden"
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseLeave={handleMouseLeave}

@@ -979,7 +979,7 @@ export function TimelinePane({
 
   return (
     <div
-      className={`flex flex-col h-full bg-background ${embedded ? "w-full" : "w-[420px] shrink-0 border-l border-border"}`}
+      className={`flex flex-col h-full ${embedded ? "w-full bg-transparent" : "w-[420px] shrink-0 border-l border-border bg-card/20"}`}
       tabIndex={0}
       onKeyDown={(evt) => {
         if (evt.key === "ArrowLeft") {
@@ -1088,7 +1088,7 @@ export function TimelinePane({
       {hasIndex && (view === "topic_detail" ? renderTopicDetailView() : renderTopicsListView())}
 
       {navigatorNode && (
-        <div className="px-3 py-2 border-t border-border bg-background/95 flex items-center justify-between gap-2">
+        <div className="px-3 py-2 border-t border-border bg-transparent flex items-center justify-between gap-2">
           <div className="min-w-0 flex-1">
             <p className="text-[11px] font-medium text-foreground truncate">{navigatorNode.title}</p>
             {rowidsCapped && (

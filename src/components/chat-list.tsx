@@ -148,7 +148,7 @@ export function ChatList({
   });
 
   return (
-    <div className="flex flex-col h-full border-r border-border bg-card">
+    <div className="flex flex-col h-full bg-transparent">
       <div className="border-b border-border">
         <div className="px-3 py-2.5">
           <div className="flex items-center gap-2 rounded-full border border-border bg-background px-3 py-2">

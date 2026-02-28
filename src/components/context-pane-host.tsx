@@ -77,7 +77,7 @@ export function ContextPaneHost({
 
   if (!selectedChat) {
     return (
-      <div className="h-full flex items-center justify-center p-6 text-center text-sm text-muted-foreground border-r border-border bg-card/30">
+      <div className="h-full flex items-center justify-center p-6 text-center text-sm text-muted-foreground bg-transparent">
         Select a conversation to view timeline.
       </div>
     );

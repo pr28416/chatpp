@@ -24,7 +24,7 @@ const MODES: ModeMeta[] = [
 export function ActivityRail({ activeMode, onModeChange }: ActivityRailProps) {
   return (
     <TooltipProvider delayDuration={120}>
-      <div className="h-full w-14 border-r border-border bg-sidebar flex flex-col items-center py-2 gap-1.5">
+      <div className="h-full w-14 border-r border-border bg-sidebar/20 flex flex-col items-center py-2 gap-1.5">
         {MODES.map((item) => {
           const Icon = item.icon;
           const active = item.mode === activeMode;
