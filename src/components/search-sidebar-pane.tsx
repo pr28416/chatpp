@@ -1,10 +1,11 @@
 import * as React from "react";
-import { ChevronDown, ChevronUp, Search, X } from "lucide-react";
+import { ChevronDown, ChevronUp } from "lucide-react";
 
 import type { DateRange, SearchResult } from "@/lib/types";
 import { DateRangeFilter } from "@/components/date-range-filter";
 import { MessageSearch, type MessageSearchHandle } from "@/components/message-search";
 import { PaneNavHeader } from "@/components/pane-nav-header";
+import { PaneSearchInput } from "@/components/ui/pane-search-input";
 
 interface SearchSidebarPaneProps {
   chatId: number | null;
@@ -61,38 +62,21 @@ export function SearchSidebarPane({
         collapsed={isHeaderCollapsed}
         accessory={(
           <div className="space-y-2">
-            <div className="flex items-center gap-2 rounded-md border border-input bg-background px-2.5 py-1.5">
-              <Search className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-              <input
-                ref={inputRef}
-                type="text"
-                placeholder="Search messages..."
-                value={searchQuery}
-                onChange={(evt) => onSearchQueryChange(evt.target.value)}
-                onKeyDown={(evt) => {
-                  if (evt.key === "ArrowDown" || (evt.key === "Enter" && !evt.shiftKey)) {
-                    evt.preventDefault();
-                    searchRef.current?.navigateResult("next");
-                  } else if (evt.key === "ArrowUp" || (evt.key === "Enter" && evt.shiftKey)) {
-                    evt.preventDefault();
-                    searchRef.current?.navigateResult("prev");
-                  } else if (evt.key === "Escape") {
-                    onSearchQueryChange("");
-                  }
-                }}
-                className="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground outline-none min-w-0"
-              />
-              {searchQuery && (
-                <button
-                  type="button"
-                  onClick={() => onSearchQueryChange("")}
-                  aria-label="Clear search"
-                  className="p-0.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
-                >
-                  <X className="h-3.5 w-3.5" />
-                </button>
-              )}
-            </div>
+            <PaneSearchInput
+              inputRef={inputRef}
+              value={searchQuery}
+              onChange={onSearchQueryChange}
+              placeholder="Search messages..."
+              onKeyDown={(evt) => {
+                if (evt.key === "ArrowDown" || (evt.key === "Enter" && !evt.shiftKey)) {
+                  evt.preventDefault();
+                  searchRef.current?.navigateResult("next");
+                } else if (evt.key === "ArrowUp" || (evt.key === "Enter" && evt.shiftKey)) {
+                  evt.preventDefault();
+                  searchRef.current?.navigateResult("prev");
+                }
+              }}
+            />
 
             <div className="flex items-center justify-between gap-2">
               <DateRangeFilter dateRange={dateRange} onDateRangeChange={onDateRangeChange} />

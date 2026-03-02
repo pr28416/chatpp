@@ -3,9 +3,9 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { Chat } from "@/lib/types";
 import { startWindowDrag as startWindowDragCommand } from "@/lib/commands";
 import { ContactAvatar } from "./contact-avatar";
-import { Search, X } from "lucide-react";
 import { format, parseISO } from "date-fns";
 import { PaneNavHeader } from "@/components/pane-nav-header";
+import { PaneSearchInput } from "@/components/ui/pane-search-input";
 
 interface ChatListProps {
   chats: Chat[];
@@ -185,32 +185,12 @@ export function ChatList({
           title="Messages"
           collapsed={isHeaderCollapsed}
           accessory={(
-            <div className="flex items-center gap-2 rounded-full border border-border bg-background px-3 py-2">
-              <Search className="h-4 w-4 text-muted-foreground shrink-0" />
-              <input
-                type="text"
-                data-tauri-drag-region="false"
-                onMouseDown={(evt) => evt.stopPropagation()}
-                value={filterQuery}
-                onChange={(e) => setFilterQuery(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Escape") setFilterQuery("");
-                }}
-                placeholder="Search conversations..."
-                className="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground outline-none"
-              />
-              {filterQuery && (
-                <button
-                  data-tauri-drag-region="false"
-                  onMouseDown={(evt) => evt.stopPropagation()}
-                  onClick={() => setFilterQuery("")}
-                  aria-label="Clear search"
-                  className="p-0.5 rounded-full hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              )}
-            </div>
+            <PaneSearchInput
+              value={filterQuery}
+              onChange={setFilterQuery}
+              placeholder="Search conversations..."
+              inDragRegion
+            />
           )}
         />
       </div>

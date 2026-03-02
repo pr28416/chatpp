@@ -32,10 +32,10 @@ import {
   ListTree,
   MessageCircle,
   RefreshCw,
-  Search,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { PaneSearchInput } from "@/components/ui/pane-search-input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { PaneNavHeader } from "@/components/pane-nav-header";
 
@@ -1046,16 +1046,11 @@ export function TimelinePane({
   const headerAccessory = (
     <div className="space-y-2">
       {hasIndex && view === "topics_list" && (
-        <div className="flex items-center gap-2 rounded-md bg-secondary/50 px-2.5 py-1.5">
-          <Search className="h-3.5 w-3.5 text-muted-foreground" />
-          <input
-            type="text"
-            value={topicQuery}
-            onChange={(evt) => setTopicQuery(evt.target.value)}
-            placeholder="Search topics..."
-            className="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground focus:outline-none"
-          />
-        </div>
+        <PaneSearchInput
+          value={topicQuery}
+          onChange={setTopicQuery}
+          placeholder="Search topics..."
+        />
       )}
 
       <div className="min-h-4 text-[11px]">
