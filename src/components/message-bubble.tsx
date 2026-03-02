@@ -101,7 +101,7 @@ export function MessageBubble({
   }
 
   const bubbleBg = isSent
-    ? "bg-[#007AFF] text-white"
+    ? "bg-primary text-primary-foreground"
     : "bg-[#E9E9EB] text-black dark:bg-[#3A3A3C] dark:text-white";
 
   const showAvatar = showSender && !isSent;
@@ -354,7 +354,7 @@ function MessageText({
               className={`underline decoration-1 underline-offset-2 ${
                 isSent
                   ? "text-white/90 hover:text-white"
-                  : "text-[#007AFF] hover:text-[#0056b3]"
+                  : "text-primary hover:text-primary/80"
               }`}
             >
               {searchQuery ? (
@@ -445,7 +445,7 @@ function ReplyPreview({
     <div
       className={`rounded-lg px-2.5 py-1.5 text-xs border border-border/40 text-left transition-colors ${
         isSent
-          ? "bg-[#007AFF]/10 text-[#007AFF] hover:bg-[#007AFF]/20"
+          ? "bg-primary/10 text-primary hover:bg-primary/20"
           : "bg-muted text-muted-foreground hover:bg-muted/80"
       }`}
     >

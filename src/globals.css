@@ -48,38 +48,39 @@
 }
 
 :root {
+  --brand-blue: #007aff;
   --radius: 0.625rem;
-  --background: oklch(0.13 0.005 285);
-  --foreground: oklch(0.95 0 0);
-  --card: oklch(0.16 0.005 285);
-  --card-foreground: oklch(0.95 0 0);
-  --popover: oklch(0.16 0.005 285);
-  --popover-foreground: oklch(0.95 0 0);
-  --primary: oklch(0.65 0.15 230);
+  --background: oklch(0.985 0.002 286);
+  --foreground: oklch(0.2 0.01 286);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.2 0.01 286);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.2 0.01 286);
+  --primary: var(--brand-blue);
   --primary-foreground: oklch(0.98 0 0);
-  --secondary: oklch(0.22 0.01 285);
-  --secondary-foreground: oklch(0.85 0 0);
-  --muted: oklch(0.2 0.005 285);
-  --muted-foreground: oklch(0.6 0 0);
-  --accent: oklch(0.75 0.12 180);
-  --accent-foreground: oklch(0.15 0 0);
+  --secondary: oklch(0.96 0.004 286);
+  --secondary-foreground: oklch(0.28 0.01 286);
+  --muted: oklch(0.96 0.004 286);
+  --muted-foreground: oklch(0.48 0.01 286);
+  --accent: var(--brand-blue);
+  --accent-foreground: oklch(0.98 0 0);
   --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.25 0.01 285);
-  --input: oklch(0.2 0.005 285);
-  --ring: oklch(0.65 0.15 230);
-  --chart-1: oklch(0.65 0.15 230);
-  --chart-2: oklch(0.75 0.12 180);
-  --chart-3: oklch(0.7 0.1 320);
-  --chart-4: oklch(0.8 0.15 90);
-  --chart-5: oklch(0.65 0.2 30);
-  --sidebar: oklch(0.11 0.005 285);
-  --sidebar-foreground: oklch(0.95 0 0);
-  --sidebar-primary: oklch(0.65 0.15 230);
+  --border: oklch(0.9 0.005 286);
+  --input: oklch(0.94 0.004 286);
+  --ring: var(--brand-blue);
+  --chart-1: oklch(0.58 0.15 230);
+  --chart-2: oklch(0.66 0.11 180);
+  --chart-3: oklch(0.62 0.1 320);
+  --chart-4: oklch(0.74 0.14 90);
+  --chart-5: oklch(0.61 0.2 30);
+  --sidebar: oklch(0.97 0.003 286);
+  --sidebar-foreground: oklch(0.2 0.01 286);
+  --sidebar-primary: var(--brand-blue);
   --sidebar-primary-foreground: oklch(0.98 0 0);
-  --sidebar-accent: oklch(0.2 0.005 285);
-  --sidebar-accent-foreground: oklch(0.85 0 0);
-  --sidebar-border: oklch(0.25 0.01 285);
-  --sidebar-ring: oklch(0.65 0.15 230);
+  --sidebar-accent: oklch(0.93 0.004 286);
+  --sidebar-accent-foreground: oklch(0.3 0.01 286);
+  --sidebar-border: oklch(0.9 0.005 286);
+  --sidebar-ring: oklch(0.58 0.15 230);
 }
 
 .dark {
@@ -89,18 +90,18 @@
   --card-foreground: oklch(0.95 0 0);
   --popover: oklch(0.16 0.005 285);
   --popover-foreground: oklch(0.95 0 0);
-  --primary: oklch(0.65 0.15 230);
+  --primary: var(--brand-blue);
   --primary-foreground: oklch(0.98 0 0);
   --secondary: oklch(0.22 0.01 285);
   --secondary-foreground: oklch(0.85 0 0);
   --muted: oklch(0.2 0.005 285);
   --muted-foreground: oklch(0.6 0 0);
-  --accent: oklch(0.75 0.12 180);
-  --accent-foreground: oklch(0.15 0 0);
+  --accent: var(--brand-blue);
+  --accent-foreground: oklch(0.98 0 0);
   --destructive: oklch(0.396 0.141 25.723);
   --border: oklch(0.25 0.01 285);
   --input: oklch(0.2 0.005 285);
-  --ring: oklch(0.65 0.15 230);
+  --ring: var(--brand-blue);
   --chart-1: oklch(0.65 0.15 230);
   --chart-2: oklch(0.75 0.12 180);
   --chart-3: oklch(0.7 0.1 320);
@@ -108,7 +109,7 @@
   --chart-5: oklch(0.65 0.2 30);
   --sidebar: oklch(0.11 0.005 285);
   --sidebar-foreground: oklch(0.95 0 0);
-  --sidebar-primary: oklch(0.65 0.15 230);
+  --sidebar-primary: var(--brand-blue);
   --sidebar-primary-foreground: oklch(0.98 0 0);
   --sidebar-accent: oklch(0.2 0.005 285);
   --sidebar-accent-foreground: oklch(0.85 0 0);
@@ -152,4 +153,16 @@
 
 .search-highlight-pulse {
   animation: search-highlight-pulse 1.5s ease-in-out 2;
+}
+
+.whatsapp-empty-bg {
+  background-image:
+    radial-gradient(circle at 20% 20%, color-mix(in oklch, var(--accent) 12%, transparent) 0, transparent 46%),
+    radial-gradient(circle at 80% 10%, color-mix(in oklch, var(--primary) 10%, transparent) 0, transparent 44%),
+    radial-gradient(circle at 50% 100%, color-mix(in oklch, var(--accent) 8%, transparent) 0, transparent 48%),
+    linear-gradient(
+      0deg,
+      color-mix(in oklch, var(--background) 96%, var(--foreground) 4%) 0%,
+      color-mix(in oklch, var(--background) 92%, var(--foreground) 8%) 100%
+    );
 }

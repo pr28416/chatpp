@@ -1204,7 +1204,7 @@ function formatShortTime(ts: string): string {
 
 function dotClassForNode(nodeId: number): string {
   const palette = [
-    "bg-blue-400",
+    "bg-primary",
     "bg-emerald-400",
     "bg-amber-400",
     "bg-violet-400",
