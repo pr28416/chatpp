@@ -1,9 +1,9 @@
 import * as React from "react";
-
 import { ActivityRail } from "@/components/activity-rail";
 import { ContextPaneHost } from "@/components/context-pane-host";
 import { MessageView } from "@/components/message-view";
 import { ResizableHandle } from "@/components/ui/resizable";
+import { startWindowDrag as startWindowDragCommand } from "@/lib/commands";
 import type {
   Chat,
   DateRange,
@@ -37,7 +37,7 @@ interface WorkspaceShellProps {
   onTimelineUiStateChange: (state: PerChatTimelineUiState) => void;
 }
 
-const RAIL_WIDTH = 56;
+const RAIL_WIDTH = 82;
 const HANDLE_WIDTH_APPROX = 8;
 const CONTEXT_MIN = 260;
 const CONTEXT_DEFAULT = 320;
@@ -46,6 +46,7 @@ const MAX_CONTEXT_RATIO = 0.75;
 const TIMELINE_MODE_MIN_WIDTH = 360;
 const TIMELINE_MODE_DEFAULT_WIDTH = 460;
 const LAYOUT_STORAGE_KEY = "workspace_layout_v1";
+const TOP_DRAG_STRIP_HEIGHT = 28;
 
 export function WorkspaceShell({
   chats,
@@ -70,7 +71,8 @@ export function WorkspaceShell({
   initialTimelineUiState,
   onTimelineUiStateChange,
 }: WorkspaceShellProps) {
-  const [contextPaneWidth, setContextPaneWidth] = React.useState<number>(CONTEXT_DEFAULT);
+  const [contextPaneWidth, setContextPaneWidth] =
+    React.useState<number>(CONTEXT_DEFAULT);
   const rootRef = React.useRef<HTMLDivElement | null>(null);
   const [rootWidth, setRootWidth] = React.useState<number>(0);
 
@@ -129,72 +131,108 @@ export function WorkspaceShell({
     );
   }, [activeMode, rootWidth]);
 
-  const startResize = React.useCallback((evt: React.MouseEvent<HTMLDivElement>) => {
-    evt.preventDefault();
-    const rootRect = rootRef.current?.getBoundingClientRect();
-    if (!rootRect) return;
-    const maxWidth = getMaxContextWidth(rootRect.width);
+  const startResize = React.useCallback(
+    (evt: React.MouseEvent<HTMLDivElement>) => {
+      evt.preventDefault();
+      const rootRect = rootRef.current?.getBoundingClientRect();
+      if (!rootRect) return;
+      const maxWidth = getMaxContextWidth(rootRect.width);
 
-    const onMove = (moveEvt: MouseEvent) => {
-      const nextWidth = clamp(moveEvt.clientX - rootRect.left - RAIL_WIDTH, CONTEXT_MIN, maxWidth);
-      setContextPaneWidth(nextWidth);
-    };
+      const onMove = (moveEvt: MouseEvent) => {
+        const nextWidth = clamp(
+          moveEvt.clientX - rootRect.left - RAIL_WIDTH,
+          CONTEXT_MIN,
+          maxWidth,
+        );
+        setContextPaneWidth(nextWidth);
+      };
 
-    const onUp = () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-    };
+      const onUp = () => {
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", onUp);
+      };
 
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-  }, []);
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onUp);
+    },
+    [],
+  );
+
+  const startWindowDrag = React.useCallback(
+    (evt: React.MouseEvent<HTMLDivElement>) => {
+      if (evt.button !== 0) {
+        return;
+      }
+      evt.preventDefault();
+      startWindowDragCommand().catch(() => {
+        // no-op: non-draggable environments should fail silently
+      });
+    },
+    [],
+  );
 
   return (
-    <div ref={rootRef} className="h-screen flex overflow-hidden">
+    <div ref={rootRef} className="h-screen flex overflow-hidden relative">
+      <div
+        className="absolute top-0 right-0 z-30"
+        style={{ left: RAIL_WIDTH, height: TOP_DRAG_STRIP_HEIGHT }}
+        data-tauri-drag-region
+        onMouseDown={startWindowDrag}
+        aria-hidden="true"
+      />
+
       <div className="h-full shrink-0" style={{ width: RAIL_WIDTH }}>
         <ActivityRail activeMode={activeMode} onModeChange={onModeChange} />
       </div>
 
-      <div
-        className="h-full shrink-0 border-r border-border bg-card/20"
-        style={{ width: clamp(contextPaneWidth, CONTEXT_MIN, maxContextWidth) }}
-      >
-        <ContextPaneHost
-          mode={activeMode}
-          chats={chats}
-          selectedChatId={selectedChatId}
-          selectedChat={selectedChat}
-          onSelectChat={onSelectChat}
-          searchQuery={searchQuery}
-          onSearchQueryChange={onSearchQueryChange}
-          dateRange={dateRange}
-          onDateRangeChange={onDateRangeChange}
-          scopeAll={scopeAll}
-          onScopeAllChange={onScopeAllChange}
-          onJumpToRowid={onJumpToRowid}
-          onSearchResultsChange={onSearchResultsChange}
-          onActiveResultChange={onActiveResultChange}
-          initialTimelineUiState={initialTimelineUiState}
-          onTimelineUiStateChange={onTimelineUiStateChange}
-        />
-      </div>
+      <div className="min-w-0 flex-1 flex flex-col">
+        <div className="min-h-0 flex flex-1 overflow-hidden">
+          <div
+            className="h-full shrink-0 border-r border-border bg-card"
+            style={{
+              width: clamp(contextPaneWidth, CONTEXT_MIN, maxContextWidth),
+            }}
+          >
+            <ContextPaneHost
+              mode={activeMode}
+              chats={chats}
+              selectedChatId={selectedChatId}
+              selectedChat={selectedChat}
+              onSelectChat={onSelectChat}
+              searchQuery={searchQuery}
+              onSearchQueryChange={onSearchQueryChange}
+              dateRange={dateRange}
+              onDateRangeChange={onDateRangeChange}
+              scopeAll={scopeAll}
+              onScopeAllChange={onScopeAllChange}
+              onJumpToRowid={onJumpToRowid}
+              onSearchResultsChange={onSearchResultsChange}
+              onActiveResultChange={onActiveResultChange}
+              initialTimelineUiState={initialTimelineUiState}
+              onTimelineUiStateChange={onTimelineUiStateChange}
+            />
+          </div>
 
-      <ResizableHandle
-        withHandle
-        onMouseDown={startResize}
-        className="cursor-col-resize hover:bg-border/80 transition-colors"
-      />
+          <ResizableHandle
+            withHandle
+            onMouseDown={startResize}
+            className="cursor-col-resize hover:bg-border/80 transition-colors"
+          />
 
-      <div className="min-w-0 flex-1 bg-background/20">
-        <MessageView
-          chat={selectedChat}
-          dateRange={dateRange}
-          searchQuery={activeMode === "search" ? searchQuery : undefined}
-          searchMatchRowids={activeMode === "search" ? searchMatchRowids : undefined}
-          requestedJumpRowid={requestedJumpRowid}
-          onJumpHandled={onJumpHandled}
-          onHighlightChange={onHighlightChange}
-        />
+          <div className="min-w-0 flex-1 bg-background/90">
+            <MessageView
+              chat={selectedChat}
+              dateRange={dateRange}
+              searchQuery={activeMode === "search" ? searchQuery : undefined}
+              searchMatchRowids={
+                activeMode === "search" ? searchMatchRowids : undefined
+              }
+              requestedJumpRowid={requestedJumpRowid}
+              onJumpHandled={onJumpHandled}
+              onHighlightChange={onHighlightChange}
+            />
+          </div>
+        </div>
       </div>
     </div>
   );

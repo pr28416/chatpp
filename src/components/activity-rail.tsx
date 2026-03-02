@@ -1,5 +1,6 @@
 import * as React from "react";
 import { ListTree, MessageSquare, Search } from "lucide-react";
+import { startWindowDrag as startWindowDragCommand } from "@/lib/commands";
 
 import type { SidebarMode } from "@/lib/types";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -22,9 +23,26 @@ const MODES: ModeMeta[] = [
 ];
 
 export function ActivityRail({ activeMode, onModeChange }: ActivityRailProps) {
+  const startWindowDrag = React.useCallback((evt: React.MouseEvent<HTMLDivElement>) => {
+    if (evt.button !== 0) {
+      return;
+    }
+    evt.preventDefault();
+    startWindowDragCommand().catch(() => {
+      // no-op: non-draggable environments should fail silently
+    });
+  }, []);
+
   return (
     <TooltipProvider delayDuration={120}>
-      <div className="h-full w-14 border-r border-border bg-sidebar/20 flex flex-col items-center py-2 gap-1.5">
+      <div className="h-full w-full border-r border-border bg-sidebar/50 flex flex-col items-center">
+        <div
+          className="h-12 w-full shrink-0"
+          data-tauri-drag-region
+          onMouseDown={startWindowDrag}
+          aria-hidden="true"
+        />
+        <div className="flex w-full flex-col items-center gap-1.5 py-2">
         {MODES.map((item) => {
           const Icon = item.icon;
           const active = item.mode === activeMode;
@@ -34,6 +52,7 @@ export function ActivityRail({ activeMode, onModeChange }: ActivityRailProps) {
                 <button
                   type="button"
                   onClick={() => onModeChange(item.mode)}
+                  data-tauri-drag-region="false"
                   className={`relative h-10 w-10 rounded-md grid place-items-center transition-colors ${
                     active
                       ? "bg-sidebar-accent text-sidebar-foreground"
@@ -49,6 +68,7 @@ export function ActivityRail({ activeMode, onModeChange }: ActivityRailProps) {
             </Tooltip>
           );
         })}
+        </div>
       </div>
     </TooltipProvider>
   );

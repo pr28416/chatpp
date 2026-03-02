@@ -12,6 +12,11 @@ use crate::types::*;
 use uuid::Uuid;
 
 #[tauri::command]
+pub fn start_window_drag(window: tauri::Window) -> Result<(), String> {
+    window.start_dragging().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn get_chats(state: tauri::State<'_, AppState>) -> Result<Vec<ChatResponse>, String> {
     let db = rusqlite::Connection::open_with_flags(
         &state.db_path,

@@ -1,9 +1,10 @@
 import * as React from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { format, isToday, isYesterday, parseISO } from "date-fns";
+import { MessageCircle } from "lucide-react";
 
 import type { Chat, DateRange, Message, PaginatedMessages } from "@/lib/types";
-import { fetchMessages } from "@/lib/commands";
+import { fetchMessages, startWindowDrag as startWindowDragCommand } from "@/lib/commands";
 import { MessageBubble } from "./message-bubble";
 import { MessageMinimap } from "./message-minimap";
 import { ReplyThreadOverlay } from "./reply-thread-overlay";
@@ -95,6 +96,16 @@ export function MessageView({
   onJumpHandled,
   onHighlightChange,
 }: MessageViewProps) {
+  const startWindowDrag = React.useCallback((evt: React.MouseEvent<HTMLDivElement>) => {
+    if (evt.button !== 0) {
+      return;
+    }
+    evt.preventDefault();
+    startWindowDragCommand().catch(() => {
+      // no-op: non-draggable environments should fail silently
+    });
+  }, []);
+
   const [messages, setMessages] = React.useState<Message[]>([]);
   const [hasPrevious, setHasPrevious] = React.useState(false);
   const [hasMore, setHasMore] = React.useState(false);
@@ -501,7 +512,7 @@ export function MessageView({
   }, [chat, hasPrevious, canAutoPaginate]);
 
   React.useEffect(() => {
-    if (!canAutoPaginate) return;
+    if (!canAutoPaginate || !hasMore) return;
 
     const sentinel = bottomSentinelRef.current;
     const root = scrollRef.current;
@@ -521,8 +532,15 @@ export function MessageView({
 
   if (!chat) {
     return (
-      <div className="flex-1 flex items-center justify-center bg-transparent">
-        <p className="text-muted-foreground">Select a conversation to view messages</p>
+      <div className="relative h-full w-full overflow-hidden bg-background">
+        <div className="pointer-events-none absolute inset-0 whatsapp-empty-bg" />
+        <div className="relative flex h-full flex-col items-center justify-center px-6 text-center">
+          <MessageCircle className="h-16 w-16 text-muted-foreground/70" strokeWidth={1.6} />
+          <h2 className="mt-5 text-3xl font-medium text-foreground/85">Chat++</h2>
+          <p className="mt-3 max-w-md text-sm text-muted-foreground">
+            Select a conversation to view messages
+          </p>
+        </div>
       </div>
     );
   }
@@ -533,7 +551,11 @@ export function MessageView({
 
   return (
     <div className="flex-1 flex flex-col h-full bg-transparent">
-      <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-transparent">
+      <div
+        className="flex items-center justify-between px-4 py-3 border-b border-border bg-transparent"
+        data-tauri-drag-region
+        onMouseDown={startWindowDrag}
+      >
         <div>
           <h2 className="text-base font-semibold text-foreground">{chatName}</h2>
           {isGroupChat && (
@@ -580,6 +602,7 @@ export function MessageView({
                     left: 0,
                     width: "100%",
                     transform: `translateY(${virtualItems[0]?.start ?? 0}px)`,
+                    paddingBottom: "20px",
                   }}
                 >
                   {virtualItems.map((virtualRow) => {
@@ -621,7 +644,6 @@ export function MessageView({
               </div>
             )}
 
-            <div className="h-2" />
           </div>
         </div>
 

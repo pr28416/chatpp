@@ -1331,7 +1331,8 @@ fn build_topics_from_ai_output(
     messages: &[MessageFeature],
     temp_id_seed: &mut i64,
 ) -> TopicGenerationResult {
-    let moment_by_id: HashMap<i64, &TimelineNodeInsert> = l0_nodes.iter().map(|n| (n.temp_id, n)).collect();
+    let moment_by_id: HashMap<i64, &TimelineNodeInsert> =
+        l0_nodes.iter().map(|n| (n.temp_id, n)).collect();
     let mut candidates = Vec::<TopicCandidate>::new();
 
     for (idx, item) in ai_topics.into_iter().enumerate() {
@@ -1346,7 +1347,8 @@ fn build_topics_from_ai_output(
         sort_moment_ids_by_rowid(&mut moment_ids, &moment_by_id);
         moment_ids.dedup();
 
-        let (start_rowid, end_rowid, rep_rowid) = topic_bounds_from_moments(&moment_ids, &moment_by_id);
+        let (start_rowid, end_rowid, rep_rowid) =
+            topic_bounds_from_moments(&moment_ids, &moment_by_id);
         let (start_ts, end_ts) = range_timestamps(messages, start_rowid, end_rowid);
         let (message_count, media_count, reaction_count, reply_count) =
             aggregate_counts(messages, start_rowid, end_rowid);
@@ -1407,7 +1409,11 @@ fn build_fallback_topic_generation(
 
     let all_ids = l0_nodes.iter().map(|n| n.temp_id).collect::<Vec<_>>();
     let start_rowid = l0_nodes.iter().map(|n| n.start_rowid).min().unwrap_or(0);
-    let end_rowid = l0_nodes.iter().map(|n| n.end_rowid).max().unwrap_or(start_rowid);
+    let end_rowid = l0_nodes
+        .iter()
+        .map(|n| n.end_rowid)
+        .max()
+        .unwrap_or(start_rowid);
     let rep_rowid = l0_nodes
         .iter()
         .min_by_key(|n| n.start_rowid)
@@ -1444,7 +1450,8 @@ fn build_fallback_topic_generation(
         is_draft: true,
     };
 
-    let moment_by_id: HashMap<i64, &TimelineNodeInsert> = l0_nodes.iter().map(|n| (n.temp_id, n)).collect();
+    let moment_by_id: HashMap<i64, &TimelineNodeInsert> =
+        l0_nodes.iter().map(|n| (n.temp_id, n)).collect();
     let occurrences = derive_topic_occurrences(topic_temp_id, &all_ids, &moment_by_id, messages);
     let moment_to_topic = all_ids
         .iter()
@@ -1497,7 +1504,11 @@ fn merge_topic_candidates(candidates: &mut Vec<TopicCandidate>, i: usize, j: usi
     };
 
     let drop = candidates.remove(drop_idx);
-    let keep = &mut candidates[if drop_idx < keep_idx { keep_idx - 1 } else { keep_idx }];
+    let keep = &mut candidates[if drop_idx < keep_idx {
+        keep_idx - 1
+    } else {
+        keep_idx
+    }];
 
     for id in drop.moment_ids {
         if !keep.moment_ids.contains(&id) {
@@ -1544,7 +1555,8 @@ fn assign_moments_to_single_topic(
     let mut assigned = HashMap::<i64, usize>::new();
     let mut unassigned = Vec::<i64>::new();
     let mut chron = l0_nodes.iter().map(|n| n.temp_id).collect::<Vec<_>>();
-    let l0_by_id: HashMap<i64, &TimelineNodeInsert> = l0_nodes.iter().map(|n| (n.temp_id, n)).collect();
+    let l0_by_id: HashMap<i64, &TimelineNodeInsert> =
+        l0_nodes.iter().map(|n| (n.temp_id, n)).collect();
     sort_moment_ids_by_rowid(&mut chron, &l0_by_id);
 
     for moment_id in &chron {
@@ -1574,14 +1586,13 @@ fn assign_moments_to_single_topic(
             continue;
         };
         let mut best_idx = 0usize;
-        let mut best_tuple = (
-            i32::MAX,
-            f32::MIN,
-            0usize,
-            i64::MAX,
-        );
+        let mut best_tuple = (i32::MAX, f32::MIN, 0usize, i64::MAX);
         for (idx, topic) in topics.iter().enumerate() {
-            let distance = rowid_distance(moment_node.representative_rowid, topic.node.start_rowid, topic.node.end_rowid);
+            let distance = rowid_distance(
+                moment_node.representative_rowid,
+                topic.node.start_rowid,
+                topic.node.end_rowid,
+            );
             let score = (
                 distance,
                 topic.node.confidence,
@@ -1607,7 +1618,10 @@ fn assign_moments_to_single_topic(
 
     let mut topic_to_moments = HashMap::<usize, Vec<i64>>::new();
     for (moment_id, topic_idx) in assigned {
-        topic_to_moments.entry(topic_idx).or_default().push(moment_id);
+        topic_to_moments
+            .entry(topic_idx)
+            .or_default()
+            .push(moment_id);
     }
 
     let mut result = TopicGenerationResult::default();
@@ -1619,7 +1633,8 @@ fn assign_moments_to_single_topic(
         moment_ids.dedup();
 
         let topic = &mut topics[topic_idx];
-        let occurrences = derive_topic_occurrences(topic.node.temp_id, &moment_ids, &l0_by_id, messages);
+        let occurrences =
+            derive_topic_occurrences(topic.node.temp_id, &moment_ids, &l0_by_id, messages);
         if occurrences.is_empty() {
             continue;
         }
@@ -1638,7 +1653,9 @@ fn assign_moments_to_single_topic(
         return build_fallback_topic_generation(chat_id, l0_nodes, messages, temp_id_seed);
     }
 
-    result.topics.sort_by_key(|n| (n.start_rowid, n.end_rowid, n.temp_id));
+    result
+        .topics
+        .sort_by_key(|n| (n.start_rowid, n.end_rowid, n.temp_id));
     for (idx, topic) in result.topics.iter_mut().enumerate() {
         topic.ordinal = idx as i32;
     }
@@ -1658,7 +1675,8 @@ fn build_l1_contiguous_subtopics(
         return out;
     }
 
-    let l0_by_id: HashMap<i64, &TimelineNodeInsert> = l0_nodes.iter().map(|n| (n.temp_id, n)).collect();
+    let l0_by_id: HashMap<i64, &TimelineNodeInsert> =
+        l0_nodes.iter().map(|n| (n.temp_id, n)).collect();
     let mut moments_by_topic = HashMap::<i64, Vec<i64>>::new();
     for node in l0_nodes {
         if let Some(topic_temp_id) = moment_to_topic.get(&node.temp_id) {
@@ -1698,10 +1716,7 @@ fn build_l1_contiguous_subtopics(
                 aggregate_counts(messages, start_rowid, end_rowid);
             let segment_nodes = lookup_nodes(&segment, &l0_by_id);
             let (title, summary) = contiguous_subtopic_text(&topic.title, &segment_nodes);
-            let confidence = segment_nodes
-                .iter()
-                .map(|n| n.confidence)
-                .sum::<f32>()
+            let confidence = segment_nodes.iter().map(|n| n.confidence).sum::<f32>()
                 / (segment_nodes.len().max(1) as f32);
 
             let subtopic_temp_id = *temp_id_seed;
@@ -1858,7 +1873,10 @@ fn contiguous_subtopic_text(topic_title: &str, moments: &[TimelineNodeInsert]) -
     if moments.is_empty() {
         return (
             "You continued this thread".to_string(),
-            format!("Within {}, you continued this thread in a contiguous stretch.", topic_title),
+            format!(
+                "Within {}, you continued this thread in a contiguous stretch.",
+                topic_title
+            ),
         );
     }
 
@@ -1931,12 +1949,23 @@ fn topic_bounds_from_moments(
     }
 }
 
-fn apply_occurrence_bounds(node: &mut TimelineNodeInsert, occurrences: &[TimelineNodeOccurrenceInsert]) {
+fn apply_occurrence_bounds(
+    node: &mut TimelineNodeInsert,
+    occurrences: &[TimelineNodeOccurrenceInsert],
+) {
     if occurrences.is_empty() {
         return;
     }
-    node.start_rowid = occurrences.iter().map(|o| o.start_rowid).min().unwrap_or(node.start_rowid);
-    node.end_rowid = occurrences.iter().map(|o| o.end_rowid).max().unwrap_or(node.end_rowid);
+    node.start_rowid = occurrences
+        .iter()
+        .map(|o| o.start_rowid)
+        .min()
+        .unwrap_or(node.start_rowid);
+    node.end_rowid = occurrences
+        .iter()
+        .map(|o| o.end_rowid)
+        .max()
+        .unwrap_or(node.end_rowid);
     node.representative_rowid = occurrences[0]
         .representative_rowid
         .clamp(node.start_rowid, node.end_rowid);
@@ -2029,7 +2058,12 @@ fn assign_level_ordinals(nodes: &mut [TimelineNodeInsert]) {
             .collect::<Vec<_>>();
         indices.sort_by_key(|idx| {
             let n = &nodes[*idx];
-            (n.start_rowid, n.end_rowid, n.representative_rowid, n.temp_id)
+            (
+                n.start_rowid,
+                n.end_rowid,
+                n.representative_rowid,
+                n.temp_id,
+            )
         });
         for (ordinal, idx) in indices.into_iter().enumerate() {
             nodes[idx].ordinal = ordinal as i32;
@@ -2665,7 +2699,13 @@ mod tests {
         }
     }
 
-    fn make_l0_node(temp_id: i64, start_rowid: i32, end_rowid: i32, start_ts: &str, end_ts: &str) -> TimelineNodeInsert {
+    fn make_l0_node(
+        temp_id: i64,
+        start_rowid: i32,
+        end_rowid: i32,
+        start_ts: &str,
+        end_ts: &str,
+    ) -> TimelineNodeInsert {
         TimelineNodeInsert {
             temp_id,
             chat_id: 1,
@@ -2824,7 +2864,8 @@ mod tests {
         let messages: Vec<MessageFeature> = (1..=50).map(|r| make_msg(r, 5)).collect();
         let mapping = HashMap::from([(1_i64, 100_i64), (2_i64, 100_i64), (3_i64, 100_i64)]);
         let mut temp_seed = 200_i64;
-        let out = build_l1_contiguous_subtopics(1, &l0, &mapping, &[topic], &messages, &mut temp_seed);
+        let out =
+            build_l1_contiguous_subtopics(1, &l0, &mapping, &[topic], &messages, &mut temp_seed);
         let mut moment_parent_count = HashMap::<i64, usize>::new();
         for m in out.memberships {
             if m.child_temp_id <= 3 {

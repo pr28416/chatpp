@@ -14,11 +14,14 @@ import { WorkspaceShell } from "@/components/workspace-shell";
 import { useRowidJumpBridge } from "@/hooks/use-rowid-jump-bridge";
 
 const THREE_PANE_FLAG =
-  ((import.meta as ImportMeta & { env?: { DEV?: boolean; VITE_UI_THREE_PANE?: string } }).env
-    ?.DEV ??
+  ((
+    import.meta as ImportMeta & {
+      env?: { DEV?: boolean; VITE_UI_THREE_PANE?: string };
+    }
+  ).env?.DEV ??
     false) ||
-  ((import.meta as ImportMeta & { env?: { VITE_UI_THREE_PANE?: string } }).env
-    ?.VITE_UI_THREE_PANE === "1");
+  (import.meta as ImportMeta & { env?: { VITE_UI_THREE_PANE?: string } }).env
+    ?.VITE_UI_THREE_PANE === "1";
 
 function defaultSearchUiState(): PerChatSearchUiState {
   return {
@@ -41,13 +44,19 @@ function defaultTimelineUiState(): PerChatTimelineUiState {
 
 export default function App() {
   const [chats, setChats] = React.useState<Chat[]>([]);
-  const [selectedChatId, setSelectedChatId] = React.useState<number | null>(null);
+  const [selectedChatId, setSelectedChatId] = React.useState<number | null>(
+    null,
+  );
   const [activeMode, setActiveMode] = React.useState<SidebarMode>("chats");
-  const [searchUiByChat, setSearchUiByChat] = React.useState<Record<number, PerChatSearchUiState>>({});
+  const [searchUiByChat, setSearchUiByChat] = React.useState<
+    Record<number, PerChatSearchUiState>
+  >({});
   const [timelineUiByChat, setTimelineUiByChat] = React.useState<
     Record<number, PerChatTimelineUiState>
   >({});
-  const [searchMatchesByChat, setSearchMatchesByChat] = React.useState<Record<number, number[]>>({});
+  const [searchMatchesByChat, setSearchMatchesByChat] = React.useState<
+    Record<number, number[]>
+  >({});
   const [error, setError] = React.useState<string | null>(null);
   const [loading, setLoading] = React.useState(true);
 
@@ -135,7 +144,9 @@ export default function App() {
     return (
       <div className="h-screen flex items-center justify-center p-8">
         <div className="text-center max-w-md">
-          <h1 className="text-xl font-semibold text-destructive mb-2">Connection Error</h1>
+          <h1 className="text-xl font-semibold text-destructive mb-2">
+            Connection Error
+          </h1>
           <p className="text-muted-foreground text-sm">{error}</p>
         </div>
       </div>
@@ -154,7 +165,11 @@ export default function App() {
     return (
       <div className="h-screen flex overflow-hidden">
         <div className="w-80 flex-shrink-0">
-          <ChatList chats={chats} selectedChatId={selectedChatId} onSelectChat={setSelectedChatId} />
+          <ChatList
+            chats={chats}
+            selectedChatId={selectedChatId}
+            onSelectChat={setSelectedChatId}
+          />
         </div>
         <MessageView
           chat={selectedChat}
@@ -178,7 +193,9 @@ export default function App() {
       activeMode={activeMode}
       onModeChange={setActiveMode}
       searchQuery={selectedSearchUi.searchQuery}
-      onSearchQueryChange={(value) => updateSelectedSearchUi({ searchQuery: value })}
+      onSearchQueryChange={(value) =>
+        updateSelectedSearchUi({ searchQuery: value })
+      }
       dateRange={selectedSearchUi.dateRange}
       onDateRangeChange={(dateRange) => updateSelectedSearchUi({ dateRange })}
       scopeAll={selectedSearchUi.scopeAll}

@@ -15,6 +15,10 @@ export async function fetchChats(): Promise<Chat[]> {
   return invoke("get_chats");
 }
 
+export async function startWindowDrag(): Promise<void> {
+  return invoke("start_window_drag");
+}
+
 export async function fetchMessages(
   chatId: number,
   params: {

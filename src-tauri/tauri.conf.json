@@ -1,5 +1,5 @@
 {
-  "productName": "iMessage Search",
+  "productName": "Chat++",
   "version": "0.1.0",
   "identifier": "com.imessage-search.desktop",
   "build": {
@@ -12,12 +12,19 @@
     "macOSPrivateApi": true,
     "windows": [
       {
-        "title": "iMessage Search",
+        "title": "Chat++",
         "width": 1200,
         "height": 800,
         "minWidth": 800,
         "minHeight": 600,
-        "transparent": true
+        "transparent": true,
+        "decorations": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": {
+          "x": 12,
+          "y": 20
+        }
       }
     ],
     "security": {

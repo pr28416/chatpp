@@ -24,6 +24,7 @@ fn main() {
             serve_attachment(&app_state, &request)
         })
         .invoke_handler(tauri::generate_handler![
+            commands::start_window_drag,
             commands::get_chats,
             commands::get_messages,
             commands::search_messages,
