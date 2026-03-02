@@ -277,6 +277,104 @@ fn load_chat_participants(
     Ok(chat_participants)
 }
 
+#[derive(Clone)]
+struct ChatPreviewMeta {
+    rowid: Option<i32>,
+    text: Option<String>,
+    associated_message_type: Option<i32>,
+    item_type: Option<i32>,
+    cache_has_attachments: bool,
+    attachment_count: i32,
+    attachment_mime_type: Option<String>,
+    attachment_is_sticker: bool,
+}
+
+fn clean_preview_text(raw: Option<&str>) -> Option<String> {
+    raw.map(|t| t.replace('\u{FFFC}', "").trim().to_string())
+        .filter(|t| !t.is_empty())
+}
+
+fn is_reaction_associated_type(associated_message_type: Option<i32>) -> bool {
+    matches!(
+        associated_message_type,
+        Some(2000..=2005) | Some(3000..=3005)
+    )
+}
+
+fn infer_preview_kind(meta: &ChatPreviewMeta) -> &'static str {
+    if meta.rowid.is_none() {
+        return "none";
+    }
+
+    if is_reaction_associated_type(meta.associated_message_type) {
+        return "reaction";
+    }
+
+    if meta.attachment_is_sticker || meta.item_type.unwrap_or_default() == 2 {
+        return "sticker";
+    }
+
+    if meta.attachment_count > 0 || meta.cache_has_attachments {
+        if let Some(mime) = meta.attachment_mime_type.as_deref() {
+            if mime.starts_with("image/") {
+                return "photo";
+            }
+        }
+        return "attachment";
+    }
+
+    "message"
+}
+
+fn placeholder_for_kind(kind: &str) -> Option<String> {
+    match kind {
+        "reaction" => Some("Reaction".to_string()),
+        "sticker" => Some("Sticker".to_string()),
+        "photo" => Some("Photo".to_string()),
+        "attachment" => Some("Attachment".to_string()),
+        "message" => Some("Message".to_string()),
+        _ => None,
+    }
+}
+
+fn generate_text_preview_for_rowid(db: &Connection, rowid: i32) -> Option<String> {
+    let mut stmt = db
+        .prepare(
+            "SELECT *, c.chat_id,
+                    (SELECT COUNT(*) FROM message_attachment_join a WHERE m.ROWID = a.message_id) AS num_attachments,
+                    NULL AS deleted_from,
+                    0 AS num_replies
+             FROM message AS m
+             LEFT JOIN chat_message_join AS c ON m.ROWID = c.message_id
+             WHERE m.ROWID = ?1
+             LIMIT 1",
+        )
+        .ok()?;
+    let row_result = stmt.query_row([rowid], |row| Ok(Message::from_row(row)));
+    let Ok(Ok(mut msg)) = row_result else {
+        return None;
+    };
+    if clean_preview_text(msg.text.as_deref()).is_none() {
+        let _ = msg.generate_text(db);
+    }
+    clean_preview_text(msg.text.as_deref())
+}
+
+fn derive_chat_preview(db: &Connection, meta: &ChatPreviewMeta) -> (Option<String>, String) {
+    if let Some(text) = clean_preview_text(meta.text.as_deref()) {
+        return (Some(text), "text".to_string());
+    }
+
+    if let Some(rowid) = meta.rowid {
+        if let Some(text) = generate_text_preview_for_rowid(db, rowid) {
+            return (Some(text), "text".to_string());
+        }
+    }
+
+    let kind = infer_preview_kind(meta).to_string();
+    (placeholder_for_kind(&kind), kind)
+}
+
 // ── Chat Queries ────────────────────────────────────────────────────────────
 
 pub fn get_chats(
@@ -286,17 +384,48 @@ pub fn get_chats(
     contact_names: &HashMap<String, String>,
 ) -> Result<Vec<ChatResponse>, Box<dyn std::error::Error + Send + Sync>> {
     let mut stmt = db.prepare(
-        "SELECT c.ROWID, c.chat_identifier, c.display_name, c.service_name,
-                MAX(m.date) as last_message_date,
-                (SELECT m2.text FROM message m2
-                 JOIN chat_message_join cmj2 ON m2.ROWID = cmj2.message_id
-                 WHERE cmj2.chat_id = c.ROWID
-                 ORDER BY m2.date DESC LIMIT 1) as last_message_text
-         FROM chat c
-         LEFT JOIN chat_message_join cmj ON c.ROWID = cmj.chat_id
-         LEFT JOIN message m ON cmj.message_id = m.ROWID
-         GROUP BY c.ROWID
-         ORDER BY last_message_date DESC",
+        "WITH chat_latest AS (
+             SELECT c.ROWID AS chat_id,
+                    c.chat_identifier,
+                    c.display_name,
+                    c.service_name,
+                    MAX(m.date) AS last_message_date,
+                    (SELECT m2.ROWID
+                     FROM message m2
+                     JOIN chat_message_join cmj2 ON m2.ROWID = cmj2.message_id
+                     WHERE cmj2.chat_id = c.ROWID
+                     ORDER BY m2.date DESC LIMIT 1) AS latest_message_rowid
+             FROM chat c
+             LEFT JOIN chat_message_join cmj ON c.ROWID = cmj.chat_id
+             LEFT JOIN message m ON cmj.message_id = m.ROWID
+             GROUP BY c.ROWID
+         )
+         SELECT cl.chat_id,
+                cl.chat_identifier,
+                cl.display_name,
+                cl.service_name,
+                cl.last_message_date,
+                cl.latest_message_rowid,
+                lm.text,
+                lm.associated_message_type,
+                lm.item_type,
+                COALESCE(lm.cache_has_attachments, 0),
+                (SELECT COUNT(*) FROM message_attachment_join maj WHERE maj.message_id = cl.latest_message_rowid),
+                (SELECT a.mime_type
+                 FROM attachment a
+                 JOIN message_attachment_join maj ON maj.attachment_id = a.ROWID
+                 WHERE maj.message_id = cl.latest_message_rowid
+                 ORDER BY a.ROWID DESC
+                 LIMIT 1),
+                COALESCE((SELECT a.is_sticker
+                 FROM attachment a
+                 JOIN message_attachment_join maj ON maj.attachment_id = a.ROWID
+                 WHERE maj.message_id = cl.latest_message_rowid
+                 ORDER BY a.ROWID DESC
+                 LIMIT 1), 0)
+         FROM chat_latest cl
+         LEFT JOIN message lm ON lm.ROWID = cl.latest_message_rowid
+         ORDER BY cl.last_message_date DESC",
     )?;
 
     let rows = stmt.query_map([], |row| {
@@ -306,16 +435,52 @@ pub fn get_chats(
             row.get::<_, Option<String>>(2)?,
             row.get::<_, Option<String>>(3)?,
             row.get::<_, Option<i64>>(4)?,
-            row.get::<_, Option<String>>(5)?,
+            row.get::<_, Option<i32>>(5)?,
+            row.get::<_, Option<String>>(6)?,
+            row.get::<_, Option<i32>>(7)?,
+            row.get::<_, Option<i32>>(8)?,
+            row.get::<_, i32>(9)?,
+            row.get::<_, i32>(10)?,
+            row.get::<_, Option<String>>(11)?,
+            row.get::<_, i32>(12)?,
         ))
     })?;
 
     let mut chats = Vec::new();
     for row in rows {
-        let (id, chat_identifier, display_name, service_name, last_date, last_text) = row?;
-        let last_message_text = last_text
-            .map(|t| t.replace('\u{FFFC}', "").trim().to_string())
-            .filter(|t| !t.is_empty());
+        let (
+            id,
+            chat_identifier,
+            display_name,
+            service_name,
+            last_date,
+            latest_message_rowid,
+            latest_message_text,
+            latest_associated_message_type,
+            latest_item_type,
+            latest_cache_has_attachments,
+            latest_attachment_count,
+            latest_attachment_mime_type,
+            latest_attachment_is_sticker,
+        ) = row?;
+
+        let preview_meta = ChatPreviewMeta {
+            rowid: latest_message_rowid,
+            text: latest_message_text,
+            associated_message_type: latest_associated_message_type,
+            item_type: latest_item_type,
+            cache_has_attachments: latest_cache_has_attachments != 0,
+            attachment_count: latest_attachment_count,
+            attachment_mime_type: latest_attachment_mime_type,
+            attachment_is_sticker: latest_attachment_is_sticker != 0,
+        };
+        let (last_message_preview, last_message_preview_kind) =
+            derive_chat_preview(db, &preview_meta);
+        let last_message_text = if last_message_preview_kind == "text" {
+            last_message_preview.clone()
+        } else {
+            None
+        };
         let parts = participants.get(&id).cloned().unwrap_or_default();
         let display_names: Vec<String> = parts.iter().map(|(name, _)| name.clone()).collect();
         let raw_handles: Vec<String> = parts.iter().map(|(_, handle)| handle.clone()).collect();
@@ -328,6 +493,8 @@ pub fn get_chats(
             participant_handles: raw_handles,
             last_message_date: last_date.and_then(apple_timestamp_to_iso),
             last_message_text,
+            last_message_preview,
+            last_message_preview_kind,
         });
     }
 
@@ -1038,5 +1205,85 @@ mod tests {
     fn resolve_handle_name_missing_returns_none() {
         let contacts: HashMap<String, String> = HashMap::new();
         assert_eq!(resolve_handle_name("407-717-8849", &contacts), None);
+    }
+
+    #[test]
+    fn clean_preview_text_removes_object_replacement_chars() {
+        assert_eq!(
+            clean_preview_text(Some(" \u{FFFC}\u{FFFC} hi \u{FFFC} ")),
+            Some("hi".to_string())
+        );
+        assert_eq!(clean_preview_text(Some("\u{FFFC}\u{FFFC}")), None);
+    }
+
+    #[test]
+    fn infer_preview_kind_prefers_reaction_and_media() {
+        let reaction = ChatPreviewMeta {
+            rowid: Some(1),
+            text: None,
+            associated_message_type: Some(2000),
+            item_type: Some(0),
+            cache_has_attachments: false,
+            attachment_count: 0,
+            attachment_mime_type: None,
+            attachment_is_sticker: false,
+        };
+        assert_eq!(infer_preview_kind(&reaction), "reaction");
+
+        let photo = ChatPreviewMeta {
+            rowid: Some(2),
+            text: None,
+            associated_message_type: Some(0),
+            item_type: Some(0),
+            cache_has_attachments: true,
+            attachment_count: 1,
+            attachment_mime_type: Some("image/jpeg".to_string()),
+            attachment_is_sticker: false,
+        };
+        assert_eq!(infer_preview_kind(&photo), "photo");
+
+        let sticker = ChatPreviewMeta {
+            rowid: Some(3),
+            text: None,
+            associated_message_type: Some(0),
+            item_type: Some(2),
+            cache_has_attachments: true,
+            attachment_count: 1,
+            attachment_mime_type: Some("image/png".to_string()),
+            attachment_is_sticker: true,
+        };
+        assert_eq!(infer_preview_kind(&sticker), "sticker");
+    }
+
+    #[test]
+    fn derive_chat_preview_returns_placeholders_and_none() {
+        let conn = Connection::open_in_memory().expect("in-memory sqlite");
+        let meta = ChatPreviewMeta {
+            rowid: Some(5),
+            text: None,
+            associated_message_type: Some(2001),
+            item_type: Some(0),
+            cache_has_attachments: false,
+            attachment_count: 0,
+            attachment_mime_type: None,
+            attachment_is_sticker: false,
+        };
+        let (preview, kind) = derive_chat_preview(&conn, &meta);
+        assert_eq!(kind, "reaction");
+        assert_eq!(preview, Some("Reaction".to_string()));
+
+        let empty = ChatPreviewMeta {
+            rowid: None,
+            text: None,
+            associated_message_type: None,
+            item_type: None,
+            cache_has_attachments: false,
+            attachment_count: 0,
+            attachment_mime_type: None,
+            attachment_is_sticker: false,
+        };
+        let (preview, kind) = derive_chat_preview(&conn, &empty);
+        assert_eq!(kind, "none");
+        assert_eq!(preview, None);
     }
 }

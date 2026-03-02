@@ -12,6 +12,8 @@ pub struct ChatResponse {
     pub participant_handles: Vec<String>,
     pub last_message_date: Option<String>,
     pub last_message_text: Option<String>,
+    pub last_message_preview: Option<String>,
+    pub last_message_preview_kind: String,
 }
 
 #[derive(Serialize, Clone)]

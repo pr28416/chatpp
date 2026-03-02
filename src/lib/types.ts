@@ -10,6 +10,15 @@ export interface Chat {
   participant_handles: string[];
   last_message_date: string | null;
   last_message_text: string | null;
+  last_message_preview: string | null;
+  last_message_preview_kind:
+    | "text"
+    | "photo"
+    | "reaction"
+    | "sticker"
+    | "attachment"
+    | "message"
+    | "none";
 }
 
 export interface Attachment {
