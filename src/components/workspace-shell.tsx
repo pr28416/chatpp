@@ -3,7 +3,6 @@ import { ActivityRail } from "@/components/activity-rail";
 import { ContextPaneHost } from "@/components/context-pane-host";
 import { MessageView } from "@/components/message-view";
 import { ResizableHandle } from "@/components/ui/resizable";
-import { startWindowDrag as startWindowDragCommand } from "@/lib/commands";
 import type {
   Chat,
   DateRange,
@@ -46,7 +45,6 @@ const MAX_CONTEXT_RATIO = 0.75;
 const TIMELINE_MODE_MIN_WIDTH = 360;
 const TIMELINE_MODE_DEFAULT_WIDTH = 460;
 const LAYOUT_STORAGE_KEY = "workspace_layout_v1";
-const TOP_DRAG_STRIP_HEIGHT = 28;
 
 export function WorkspaceShell({
   chats,
@@ -158,29 +156,8 @@ export function WorkspaceShell({
     [],
   );
 
-  const startWindowDrag = React.useCallback(
-    (evt: React.MouseEvent<HTMLDivElement>) => {
-      if (evt.button !== 0) {
-        return;
-      }
-      evt.preventDefault();
-      startWindowDragCommand().catch(() => {
-        // no-op: non-draggable environments should fail silently
-      });
-    },
-    [],
-  );
-
   return (
     <div ref={rootRef} className="h-screen flex overflow-hidden relative">
-      <div
-        className="absolute top-0 right-0 z-30"
-        style={{ left: RAIL_WIDTH, height: TOP_DRAG_STRIP_HEIGHT }}
-        data-tauri-drag-region
-        onMouseDown={startWindowDrag}
-        aria-hidden="true"
-      />
-
       <div className="h-full shrink-0" style={{ width: RAIL_WIDTH }}>
         <ActivityRail activeMode={activeMode} onModeChange={onModeChange} />
       </div>

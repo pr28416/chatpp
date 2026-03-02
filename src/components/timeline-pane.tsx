@@ -125,6 +125,7 @@ export function TimelinePane({
   const isBusy = isRunning || isCanceling;
   const hasIndex = overview?.indexed ?? false;
   const isStale = !!overview && overview.source_max_rowid > overview.indexed_max_rowid;
+  const showStaleInHeader = hasIndex && isStale && !isBusy && !error;
   const showEmptyState = !hasIndex && !isBusy;
 
   const sortedTopics = React.useMemo(() => [...topics].sort(sortTimelineNodes), [topics]);
@@ -985,6 +986,9 @@ export function TimelinePane({
 
   const headerTrailing = !showEmptyState ? (
     <div className="flex items-center justify-end gap-1">
+      {showStaleInHeader ? (
+        <span className="text-[11px] text-amber-600 whitespace-nowrap">New messages detected</span>
+      ) : null}
       <Button
         variant="outline"
         size="icon-sm"
@@ -1064,8 +1068,6 @@ export function TimelinePane({
             {" · "}
             {Math.round((jobState?.progress ?? 0) * 100)}%
           </span>
-        ) : hasIndex && isStale ? (
-          <span className="text-amber-600">New messages detected</span>
         ) : (
           <span className="text-muted-foreground">
             {view === "topic_detail" ? "Topic detail" : "Browse topics"}
