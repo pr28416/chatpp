@@ -1,9 +1,11 @@
 import * as React from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Chat } from "@/lib/types";
+import { startWindowDrag as startWindowDragCommand } from "@/lib/commands";
 import { ContactAvatar } from "./contact-avatar";
 import { Search, X } from "lucide-react";
 import { format, parseISO } from "date-fns";
+import { PaneNavHeader } from "@/components/pane-nav-header";
 
 interface ChatListProps {
   chats: Chat[];
@@ -62,8 +64,10 @@ const ChatRow = React.memo(function ChatRow({
   return (
     <button
       onClick={() => onSelectChat(chatId)}
-      className={`flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-accent border-b border-border/50 ${
-        isSelected ? "bg-accent" : ""
+      className={`flex w-full items-center gap-3 px-4 py-3 text-left transition-colors border-b border-border/50 ${
+        isSelected
+          ? "bg-accent"
+          : "hover:bg-foreground/10 dark:hover:bg-foreground/15 active:bg-foreground/15"
       }`}
     >
       <ContactAvatar
@@ -74,14 +78,26 @@ const ChatRow = React.memo(function ChatRow({
 
       <div className="flex-1 min-w-0">
         <div className="flex items-start gap-2 min-w-0">
-          <span className="min-w-0 flex-1 text-sm font-medium text-foreground truncate">
+          <span
+            className={`min-w-0 flex-1 text-sm font-medium truncate ${
+              isSelected ? "text-accent-foreground" : "text-foreground"
+            }`}
+          >
             {display.displayName}
           </span>
-          <span className="text-xs text-muted-foreground shrink-0 pt-0.5">
+          <span
+            className={`text-xs shrink-0 pt-0.5 ${
+              isSelected ? "text-accent-foreground/80" : "text-muted-foreground"
+            }`}
+          >
             {display.formattedDate}
           </span>
         </div>
-        <p className="text-xs text-muted-foreground line-clamp-2 break-all mt-0.5 leading-relaxed">
+        <p
+          className={`text-xs line-clamp-2 break-all mt-0.5 leading-relaxed ${
+            isSelected ? "text-accent-foreground/85" : "text-muted-foreground"
+          }`}
+        >
           {display.previewText}
         </p>
       </div>
@@ -94,7 +110,10 @@ export function ChatList({
   selectedChatId,
   onSelectChat,
 }: ChatListProps) {
+  const HEADER_COLLAPSE_SCROLL_TOP = 12;
+  const SCROLL_DIRECTION_EPSILON = 1;
   const [filterQuery, setFilterQuery] = React.useState("");
+  const [isHeaderCollapsed, setIsHeaderCollapsed] = React.useState(false);
   const deferredQuery = React.useDeferredValue(filterQuery);
 
   const chatDisplayMap = React.useMemo(() => {
@@ -103,11 +122,7 @@ export function ChatList({
       map.set(chat.id, {
         displayName: formatChatName(chat),
         formattedDate: formatDate(chat.last_message_date),
-        previewText:
-          chat.last_message_text ||
-          (chat.participant_handles.length > 0
-            ? chat.participant_handles.join(", ")
-            : "No messages"),
+        previewText: chat.last_message_preview || chat.last_message_text || "No messages",
         handleId: chat.participant_handles[0] ?? null,
       });
     }
@@ -122,6 +137,7 @@ export function ChatList({
       parts.push(...chat.participants);
       parts.push(...chat.participant_handles);
       parts.push(chat.chat_identifier);
+      if (chat.last_message_preview) parts.push(chat.last_message_preview);
       if (chat.last_message_text) parts.push(chat.last_message_text);
       index.set(chat.id, parts.join("\0").toLowerCase());
     }
@@ -138,6 +154,7 @@ export function ChatList({
   }, [chats, deferredQuery, searchIndex]);
 
   const scrollRef = React.useRef<HTMLDivElement>(null);
+  const lastScrollTopRef = React.useRef(0);
 
   const virtualizer = useVirtualizer({
     count: filteredChats.length,
@@ -147,36 +164,80 @@ export function ChatList({
     getItemKey: (index) => filteredChats[index]?.id ?? index,
   });
 
+  const startWindowDrag = React.useCallback((evt: React.MouseEvent<HTMLDivElement>) => {
+    if (evt.button !== 0) {
+      return;
+    }
+    evt.preventDefault();
+    startWindowDragCommand().catch(() => {
+      // no-op: non-draggable environments should fail silently
+    });
+  }, []);
+
   return (
     <div className="flex flex-col h-full bg-transparent">
-      <div className="border-b border-border">
-        <div className="px-3 py-2.5">
-          <div className="flex items-center gap-2 rounded-full border border-border bg-background px-3 py-2">
-            <Search className="h-4 w-4 text-muted-foreground shrink-0" />
-            <input
-              type="text"
-              value={filterQuery}
-              onChange={(e) => setFilterQuery(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Escape") setFilterQuery("");
-              }}
-              placeholder="Search conversations..."
-              className="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground outline-none"
-            />
-            {filterQuery && (
-              <button
-                onClick={() => setFilterQuery("")}
-                aria-label="Clear search"
-                className="p-0.5 rounded-full hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            )}
-          </div>
-        </div>
+      <div
+        className="relative z-10"
+        data-tauri-drag-region
+        onMouseDown={startWindowDrag}
+      >
+        <PaneNavHeader
+          title="Messages"
+          collapsed={isHeaderCollapsed}
+          accessory={(
+            <div className="flex items-center gap-2 rounded-full border border-border bg-background px-3 py-2">
+              <Search className="h-4 w-4 text-muted-foreground shrink-0" />
+              <input
+                type="text"
+                data-tauri-drag-region="false"
+                onMouseDown={(evt) => evt.stopPropagation()}
+                value={filterQuery}
+                onChange={(e) => setFilterQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") setFilterQuery("");
+                }}
+                placeholder="Search conversations..."
+                className="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground outline-none"
+              />
+              {filterQuery && (
+                <button
+                  data-tauri-drag-region="false"
+                  onMouseDown={(evt) => evt.stopPropagation()}
+                  onClick={() => setFilterQuery("")}
+                  aria-label="Clear search"
+                  className="p-0.5 rounded-full hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              )}
+            </div>
+          )}
+        />
       </div>
 
-      <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto">
+      <div
+        ref={scrollRef}
+        onScroll={(evt) => {
+          const currentScrollTop = Math.max(0, evt.currentTarget.scrollTop);
+          const delta = currentScrollTop - lastScrollTopRef.current;
+          let nextCollapsed = isHeaderCollapsed;
+
+          if (currentScrollTop <= HEADER_COLLAPSE_SCROLL_TOP) {
+            nextCollapsed = false;
+          } else if (delta > SCROLL_DIRECTION_EPSILON) {
+            nextCollapsed = true;
+          } else if (delta < -SCROLL_DIRECTION_EPSILON) {
+            // iOS-like behavior: any upward scroll restores the full header.
+            nextCollapsed = false;
+          }
+
+          if (nextCollapsed !== isHeaderCollapsed) {
+            setIsHeaderCollapsed(nextCollapsed);
+          }
+          lastScrollTopRef.current = currentScrollTop;
+        }}
+        className="flex-1 min-h-0 overflow-y-auto"
+      >
         {filteredChats.length === 0 ? (
           <div className="p-8 text-center text-muted-foreground text-sm">
             {filterQuery

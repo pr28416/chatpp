@@ -37,6 +37,7 @@ import {
 
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { PaneNavHeader } from "@/components/pane-nav-header";
 
 interface TimelinePaneProps {
   chatId: number;
@@ -99,6 +100,7 @@ export function TimelinePane({
   const [rationaleOpenNodeId, setRationaleOpenNodeId] = React.useState<number | null>(null);
   const [rationalePinnedNodeId, setRationalePinnedNodeId] = React.useState<number | null>(null);
   const [topicsListScrollTop, setTopicsListScrollTop] = React.useState(0);
+  const [detailScrollTop, setDetailScrollTop] = React.useState(0);
 
   const topicsListRef = React.useRef<HTMLDivElement | null>(null);
   const selectedAnchorRowidRef = React.useRef<number | null>(null);
@@ -344,6 +346,7 @@ export function TimelinePane({
     setRationaleOpenNodeId(null);
     setRationalePinnedNodeId(null);
     setTopicsListScrollTop(0);
+    setDetailScrollTop(0);
     selectedAnchorRowidRef.current = null;
 
     void refreshStatus();
@@ -567,6 +570,7 @@ export function TimelinePane({
       if (topicsListRef.current) {
         setTopicsListScrollTop(topicsListRef.current.scrollTop);
       }
+      setDetailScrollTop(0);
       setSelectedTopicId(topic.id);
       setSelectedDetailNodeId(topic.id);
       setView("topic_detail");
@@ -576,6 +580,7 @@ export function TimelinePane({
   );
 
   const handleBackToTopics = React.useCallback(() => {
+    setDetailScrollTop(0);
     setView("topics_list");
   }, []);
 
@@ -686,19 +691,6 @@ export function TimelinePane({
   const renderTopicsListView = () => {
     return (
       <div className="flex-1 min-h-0 flex flex-col">
-        <div className="p-2 border-b border-border">
-          <div className="flex items-center gap-2 rounded-md bg-secondary/50 px-2.5 py-1.5">
-            <Search className="h-3.5 w-3.5 text-muted-foreground" />
-            <input
-              type="text"
-              value={topicQuery}
-              onChange={(evt) => setTopicQuery(evt.target.value)}
-              placeholder="Search topics..."
-              className="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground focus:outline-none"
-            />
-          </div>
-        </div>
-
         <div className="px-3 pt-2 pb-1 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
           Topics
         </div>
@@ -769,20 +761,10 @@ export function TimelinePane({
 
     return (
       <div className="flex-1 min-h-0 flex flex-col">
-        <div className="px-3 py-2 border-b border-border flex items-center gap-2">
-          <Button
-            variant="outline"
-            size="icon-sm"
-            className="h-7 w-7"
-            onClick={handleBackToTopics}
-            aria-label="Back to topics"
-          >
-            <ArrowLeft className="h-3.5 w-3.5" />
-          </Button>
-          <p className="text-xs font-medium text-foreground truncate">{selectedTopic.title}</p>
-        </div>
-
-        <div className="flex-1 min-h-0 overflow-y-auto px-3 py-2 space-y-3">
+        <div
+          className="flex-1 min-h-0 overflow-y-auto px-3 py-2 space-y-3"
+          onScroll={(evt) => setDetailScrollTop(evt.currentTarget.scrollTop)}
+        >
           <section className="pb-3 border-b border-border">
             <div className="mb-1.5 flex items-center gap-2 text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
               <span className={`h-2 w-2 rounded-full ${dotClassForNode(selectedTopic.id)}`} />
@@ -976,6 +958,122 @@ export function TimelinePane({
   };
 
   const navigatorNode = selectedDetailNode ?? selectedTopic;
+  const isHeaderCollapsed =
+    (view === "topics_list" ? topicsListScrollTop : detailScrollTop) > 12;
+  const headerTitle =
+    view === "topic_detail"
+      ? (selectedTopic?.title ?? "Timeline")
+      : "Timeline";
+
+  const headerLeading = (
+    <div className="flex items-center gap-2">
+      {view === "topic_detail" ? (
+        <Button
+          variant="outline"
+          size="icon-sm"
+          className="h-7 w-7"
+          onClick={handleBackToTopics}
+          aria-label="Back to topics"
+        >
+          <ArrowLeft className="h-3.5 w-3.5" />
+        </Button>
+      ) : (
+        <ListTree className="h-4 w-4 text-primary" />
+      )}
+    </div>
+  );
+
+  const headerTrailing = !showEmptyState ? (
+    <div className="flex items-center justify-end gap-1">
+      <Button
+        variant="outline"
+        size="icon-sm"
+        onClick={() => void handleStartIndex(false)}
+        disabled={isBusy}
+        className="h-8 w-8"
+        aria-label={hasIndex ? "Update timeline index" : "Start indexing"}
+      >
+        <RefreshCw className="h-4 w-4" />
+      </Button>
+      <Popover open={menuOpen} onOpenChange={setMenuOpen}>
+        <PopoverTrigger asChild>
+          <Button variant="outline" size="icon-sm" className="h-8 w-8">
+            <Ellipsis className="h-4 w-4" />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent align="end" className="w-44 p-1.5">
+          <div className="space-y-1">
+            <button
+              type="button"
+              onClick={() => {
+                void handleStartIndex(true);
+                setMenuOpen(false);
+              }}
+              disabled={isBusy}
+              className="w-full text-left text-xs px-2.5 py-2 rounded-md hover:bg-muted disabled:opacity-40"
+            >
+              Rebuild index
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                void handleRetryFailed();
+                setMenuOpen(false);
+              }}
+              disabled={isBusy || !(jobState?.failed_batches ?? 0)}
+              className="w-full text-left text-xs px-2.5 py-2 rounded-md hover:bg-muted disabled:opacity-40"
+            >
+              Retry failed
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleCancel()}
+              disabled={!isBusy}
+              className="w-full text-left text-xs px-2.5 py-2 rounded-md hover:bg-muted disabled:opacity-40"
+            >
+              Cancel run
+            </button>
+          </div>
+        </PopoverContent>
+      </Popover>
+    </div>
+  ) : undefined;
+
+  const headerAccessory = (
+    <div className="space-y-2">
+      {hasIndex && view === "topics_list" && (
+        <div className="flex items-center gap-2 rounded-md bg-secondary/50 px-2.5 py-1.5">
+          <Search className="h-3.5 w-3.5 text-muted-foreground" />
+          <input
+            type="text"
+            value={topicQuery}
+            onChange={(evt) => setTopicQuery(evt.target.value)}
+            placeholder="Search topics..."
+            className="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground focus:outline-none"
+          />
+        </div>
+      )}
+
+      <div className="min-h-4 text-[11px]">
+        {error ? (
+          <span className="text-red-500">{error}</span>
+        ) : isBusy ? (
+          <span className="text-muted-foreground">
+            {jobState?.phase ?? "processing"}
+            {isCanceling ? " (stopping)" : ""}
+            {" · "}
+            {Math.round((jobState?.progress ?? 0) * 100)}%
+          </span>
+        ) : hasIndex && isStale ? (
+          <span className="text-amber-600">New messages detected</span>
+        ) : (
+          <span className="text-muted-foreground">
+            {view === "topic_detail" ? "Topic detail" : "Browse topics"}
+          </span>
+        )}
+      </div>
+    </div>
+  );
 
   return (
     <div
@@ -991,87 +1089,13 @@ export function TimelinePane({
         }
       }}
     >
-      <div className="px-3 py-2.5 border-b border-border">
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <ListTree className="h-4 w-4 text-primary" />
-            <h3 className="text-sm font-semibold text-foreground">Timeline</h3>
-          </div>
-          {hasIndex && isStale && !isBusy && (
-            <span className="text-[11px] text-amber-600">New messages detected</span>
-          )}
-        </div>
-      </div>
-
-      {!showEmptyState && (
-        <div className="px-3 py-2 border-b border-border flex items-center justify-end gap-1">
-          <Button
-            variant="outline"
-            size="icon-sm"
-            onClick={() => void handleStartIndex(false)}
-            disabled={isBusy}
-            className="h-8 w-8"
-            aria-label={hasIndex ? "Update timeline index" : "Start indexing"}
-          >
-            <RefreshCw className="h-4 w-4" />
-          </Button>
-          <Popover open={menuOpen} onOpenChange={setMenuOpen}>
-            <PopoverTrigger asChild>
-              <Button variant="outline" size="icon-sm" className="h-8 w-8">
-                <Ellipsis className="h-4 w-4" />
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent align="end" className="w-44 p-1.5">
-              <div className="space-y-1">
-                <button
-                  type="button"
-                  onClick={() => {
-                    void handleStartIndex(true);
-                    setMenuOpen(false);
-                  }}
-                  disabled={isBusy}
-                  className="w-full text-left text-xs px-2.5 py-2 rounded-md hover:bg-muted disabled:opacity-40"
-                >
-                  Rebuild index
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    void handleRetryFailed();
-                    setMenuOpen(false);
-                  }}
-                  disabled={isBusy || !(jobState?.failed_batches ?? 0)}
-                  className="w-full text-left text-xs px-2.5 py-2 rounded-md hover:bg-muted disabled:opacity-40"
-                >
-                  Retry failed
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void handleCancel()}
-                  disabled={!isBusy}
-                  className="w-full text-left text-xs px-2.5 py-2 rounded-md hover:bg-muted disabled:opacity-40"
-                >
-                  Cancel run
-                </button>
-              </div>
-            </PopoverContent>
-          </Popover>
-        </div>
-      )}
-
-      {isBusy && (
-        <div className="px-3 py-2 border-b border-border text-[11px] text-muted-foreground">
-          <div className="flex items-center justify-between">
-            <span>
-              {jobState?.phase ?? "processing"}
-              {isCanceling ? " (stopping)" : ""}
-            </span>
-            <span>{Math.round((jobState?.progress ?? 0) * 100)}%</span>
-          </div>
-        </div>
-      )}
-
-      {error && <div className="px-3 py-2 border-b border-border text-[11px] text-red-500">{error}</div>}
+      <PaneNavHeader
+        title={headerTitle}
+        collapsed={isHeaderCollapsed}
+        leading={headerLeading}
+        trailing={headerTrailing}
+        accessory={showEmptyState ? undefined : headerAccessory}
+      />
 
       {showEmptyState && (
         <div className="p-4 text-sm text-muted-foreground space-y-2">

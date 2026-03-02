@@ -1,59 +1,45 @@
 import * as React from "react";
-import { Search, X, ChevronUp, ChevronDown } from "lucide-react";
 import { SearchResult, DateRange } from "@/lib/types";
 import { searchMessages } from "@/lib/commands";
 import { format, parseISO } from "date-fns";
+
+export interface MessageSearchHandle {
+  navigateResult: (direction: "next" | "prev") => void;
+}
 
 interface MessageSearchProps {
   chatId: number;
   dateRange: DateRange;
   onJumpToResult: (result: SearchResult) => void;
   onSearchResults: (results: SearchResult[]) => void;
-  onClose: () => void;
   onActiveResultChange: (result: SearchResult | null) => void;
   searchQuery: string;
-  onSearchQueryChange: (query: string) => void;
-  scopeAll?: boolean;
-  onScopeAllChange?: (value: boolean) => void;
-  showHeader?: boolean;
+  scopeAll: boolean;
+  onStatusChange?: (status: {
+    loading: boolean;
+    total: number;
+    activeIndex: number;
+  }) => void;
+  resultsContainerRef?: React.RefObject<HTMLDivElement | null>;
+  onResultsScrollTopChange?: (scrollTop: number) => void;
 }
 
-export function MessageSearch({
+export const MessageSearch = React.forwardRef<MessageSearchHandle, MessageSearchProps>(function MessageSearch({
   chatId,
   dateRange,
   onJumpToResult,
   onSearchResults,
-  onClose,
   onActiveResultChange,
   searchQuery,
-  onSearchQueryChange,
-  scopeAll: scopeAllProp,
-  onScopeAllChange,
-  showHeader = true,
-}: MessageSearchProps) {
-  const inputRef = React.useRef<HTMLInputElement>(null);
+  scopeAll,
+  onStatusChange,
+  resultsContainerRef,
+  onResultsScrollTopChange,
+}: MessageSearchProps, ref) {
   const [results, setResults] = React.useState<SearchResult[]>([]);
   const [activeIndex, setActiveIndex] = React.useState(-1);
   const [loading, setLoading] = React.useState(false);
-  const [scopeAllInternal, setScopeAllInternal] = React.useState(
-    !dateRange.start && !dateRange.end,
-  );
-  const scopeAll = scopeAllProp ?? scopeAllInternal;
   const resultsRef = React.useRef<HTMLDivElement>(null);
-
-  const setScopeAll = React.useCallback(
-    (value: boolean) => {
-      if (scopeAllProp === undefined) {
-        setScopeAllInternal(value);
-      }
-      onScopeAllChange?.(value);
-    },
-    [onScopeAllChange, scopeAllProp],
-  );
-
-  React.useEffect(() => {
-    inputRef.current?.focus();
-  }, []);
 
   React.useEffect(() => {
     if (!searchQuery.trim()) {
@@ -110,126 +96,41 @@ export function MessageSearch({
     [results, activeIndex, onJumpToResult, onActiveResultChange],
   );
 
-  const handleKeyDown = React.useCallback(
-    (e: React.KeyboardEvent) => {
-      if (e.key === "Escape") {
-        onClose();
-      } else if (e.key === "Enter" && !e.shiftKey) {
-        e.preventDefault();
-        navigateResult("next");
-      } else if (e.key === "Enter" && e.shiftKey) {
-        e.preventDefault();
-        navigateResult("prev");
-      } else if (e.key === "ArrowDown") {
-        e.preventDefault();
-        navigateResult("next");
-      } else if (e.key === "ArrowUp") {
-        e.preventDefault();
-        navigateResult("prev");
-      }
-    },
-    [onClose, navigateResult],
-  );
-
   React.useEffect(() => {
     if (activeIndex < 0 || !resultsRef.current) return;
     const activeEl = resultsRef.current.children[activeIndex] as HTMLElement;
     activeEl?.scrollIntoView({ block: "nearest" });
   }, [activeIndex]);
 
-  const hasDateScope = dateRange.start || dateRange.end;
+  React.useEffect(() => {
+    onStatusChange?.({
+      loading,
+      total: results.length,
+      activeIndex,
+    });
+  }, [activeIndex, loading, onStatusChange, results.length]);
+
+  React.useImperativeHandle(ref, () => ({
+    navigateResult,
+  }), [navigateResult]);
+
+  const setResultsContainerRef = React.useCallback(
+    (node: HTMLDivElement | null) => {
+      resultsRef.current = node;
+      if (resultsContainerRef) {
+        resultsContainerRef.current = node;
+      }
+    },
+    [resultsContainerRef],
+  );
 
   return (
     <div className="flex flex-col h-full">
-      {showHeader && (
-        <div className="flex items-center justify-between px-3 py-2.5 border-b border-border">
-          <span className="text-xs font-semibold text-foreground">Search</span>
-          <button
-            type="button"
-            onClick={onClose}
-            className="p-0.5 rounded hover:bg-muted transition-colors"
-            aria-label="Close search"
-          >
-            <X className="h-3.5 w-3.5" />
-          </button>
-        </div>
-      )}
-
-      <div className="px-3 py-2 border-b border-border">
-        <div className="flex items-center gap-2 rounded-md border border-input bg-background px-2.5 py-1.5">
-          <Search className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-          <input
-            ref={inputRef}
-            type="text"
-            placeholder="Search messages..."
-            value={searchQuery}
-            onChange={(e) => onSearchQueryChange(e.target.value)}
-            onKeyDown={handleKeyDown}
-            className="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground outline-none min-w-0"
-          />
-        </div>
-
-        {searchQuery.trim() && (
-          <div className="flex items-center justify-between mt-2">
-            <span className="text-[11px] text-muted-foreground tabular-nums">
-              {loading
-                ? "Searching..."
-                : results.length > 0
-                  ? `${activeIndex + 1} of ${results.length} matches`
-                  : "No matches"}
-            </span>
-            <div className="flex items-center gap-0.5">
-              <button
-                type="button"
-                onClick={() => navigateResult("prev")}
-                disabled={results.length === 0}
-                className="p-0.5 rounded hover:bg-muted disabled:opacity-30 transition-colors"
-                aria-label="Previous match"
-              >
-                <ChevronUp className="h-3.5 w-3.5" />
-              </button>
-              <button
-                type="button"
-                onClick={() => navigateResult("next")}
-                disabled={results.length === 0}
-                className="p-0.5 rounded hover:bg-muted disabled:opacity-30 transition-colors"
-                aria-label="Next match"
-              >
-                <ChevronDown className="h-3.5 w-3.5" />
-              </button>
-            </div>
-          </div>
-        )}
-
-        {hasDateScope && (
-          <div className="flex items-center gap-1.5 mt-2">
-            <button
-              type="button"
-              onClick={() => setScopeAll(false)}
-              className={`text-[11px] px-2 py-0.5 rounded-full border transition-colors ${
-                !scopeAll
-                  ? "bg-primary text-primary-foreground border-primary"
-                  : "bg-transparent text-muted-foreground border-border hover:border-foreground/30"
-              }`}
-            >
-              Current range
-            </button>
-            <button
-              type="button"
-              onClick={() => setScopeAll(true)}
-              className={`text-[11px] px-2 py-0.5 rounded-full border transition-colors ${
-                scopeAll
-                  ? "bg-primary text-primary-foreground border-primary"
-                  : "bg-transparent text-muted-foreground border-border hover:border-foreground/30"
-              }`}
-            >
-              All time
-            </button>
-          </div>
-        )}
-      </div>
-
-      <div ref={resultsRef} className="flex-1 overflow-y-auto">
+      <div
+        ref={setResultsContainerRef}
+        onScroll={(evt) => onResultsScrollTopChange?.(evt.currentTarget.scrollTop)}
+        className="flex-1 overflow-y-auto"
+      >
         {results.length === 0 && searchQuery.trim() && !loading && (
           <div className="flex items-center justify-center py-8 px-4">
             <p className="text-xs text-muted-foreground text-center">
@@ -247,18 +148,32 @@ export function MessageSearch({
               onJumpToResult(result);
             }}
             className={`w-full text-left px-3 py-2.5 border-b border-border/50 transition-colors ${
-              i === activeIndex ? "bg-accent" : "hover:bg-muted/50"
+              i === activeIndex
+                ? "bg-accent"
+                : "hover:bg-foreground/10 dark:hover:bg-foreground/15 active:bg-foreground/15"
             }`}
           >
             <div className="flex items-center justify-between gap-2">
-              <span className="text-xs font-medium text-foreground truncate">
+              <span
+                className={`text-xs font-medium truncate ${
+                  i === activeIndex ? "text-accent-foreground" : "text-foreground"
+                }`}
+              >
                 {result.is_from_me ? "You" : result.sender || "Unknown"}
               </span>
-              <span className="text-[10px] text-muted-foreground whitespace-nowrap">
+              <span
+                className={`text-[10px] whitespace-nowrap ${
+                  i === activeIndex ? "text-accent-foreground/80" : "text-muted-foreground"
+                }`}
+              >
                 {formatResultDate(result.date)}
               </span>
             </div>
-            <p className="text-xs text-muted-foreground line-clamp-2 mt-0.5 leading-relaxed">
+            <p
+              className={`text-xs line-clamp-2 mt-0.5 leading-relaxed ${
+                i === activeIndex ? "text-accent-foreground/85" : "text-muted-foreground"
+              }`}
+            >
               <HighlightedSnippet
                 text={result.text || ""}
                 query={searchQuery}
@@ -269,7 +184,9 @@ export function MessageSearch({
       </div>
     </div>
   );
-}
+});
+
+MessageSearch.displayName = "MessageSearch";
 
 function formatResultDate(dateStr: string): string {
   try {
