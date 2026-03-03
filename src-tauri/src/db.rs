@@ -1063,7 +1063,7 @@ pub fn search_messages(
     contact_names: &HashMap<String, String>,
 ) -> Result<SearchResponse, Box<dyn std::error::Error + Send + Sync>> {
     let limit = params.limit.unwrap_or(500);
-    let query_lower = params.q.to_lowercase();
+    let query_lower = normalize_search_query(&params.q);
 
     let mut conditions = vec![
         "c.chat_id = ?1".to_string(),
@@ -1086,7 +1086,10 @@ pub fn search_messages(
         idx += 1;
     }
 
-    conditions.push(format!("INSTR(LOWER(COALESCE(m.text, '')), ?{}) > 0", idx));
+    conditions.push(format!(
+        "INSTR(LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(m.text, ''), '’', '''), '‘', '''), '“', '\"'), '”', '\"'), '—', '-'), ' ', ' ')), ?{}) > 0",
+        idx
+    ));
     sql_params.push(Box::new(query_lower.clone()));
 
     let where_clause = conditions.join(" AND ");
@@ -1136,6 +1139,17 @@ pub fn search_messages(
 
     let total = results.len();
     Ok(SearchResponse { results, total })
+}
+
+fn normalize_search_query(input: &str) -> String {
+    input
+        .replace('\u{2019}', "'")
+        .replace('\u{2018}', "'")
+        .replace('\u{201C}', "\"")
+        .replace('\u{201D}', "\"")
+        .replace('\u{2014}', "-")
+        .replace('\u{00A0}', " ")
+        .to_lowercase()
 }
 
 // ── Date Conversion Helpers ─────────────────────────────────────────────────

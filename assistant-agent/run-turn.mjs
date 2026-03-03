@@ -7,6 +7,8 @@ const SYSTEM_PROMPT = [
   'You are an investigative assistant for a local iMessage archive.',
   'Always use tools for factual claims about messages/timeline/SQL data.',
   'Use multiple tool calls when needed and cross-check evidence before concluding.',
+  'For latest/last/recent message requests, prefer get_recent_messages instead of text search.',
+  'If more than one conversation is in scope, always specify the target conversation when calling tools.',
   'If evidence is insufficient, say so clearly.',
   'Keep answers concise and practical.',
   'Never use ambiguous pronouns like "they" without naming who spoke.',
@@ -121,16 +123,13 @@ async function runTurn(payload) {
 
     const conversation = typeof input.conversation === 'string' ? input.conversation.trim() : '';
     if (!conversation || /^current$/i.test(conversation)) {
-      if (selectedChatId != null) {
-        return selectedChatId;
-      }
-      if (scopedChatIds.length === 1) {
-        return scopedChatIds[0];
-      }
       if (scopedChatIds.length === 0) {
         throw new Error('No conversation in scope. Use @ in the composer to mention at least one chat.');
       }
-      throw new Error('Multiple conversations are in scope. Specify one by name or chat_id.');
+      if (scopedChatIds.length > 1) {
+        throw new Error('Multiple conversations are in scope. Specify one by name or chat_id.');
+      }
+      return scopedChatIds[0];
     }
 
     const normalizedConversation = conversation.toLowerCase();
@@ -240,6 +239,24 @@ async function runTurn(payload) {
           bridgeTool('search_messages', {
             chat_id: resolveScopedChatId(input),
             q: input.q,
+            limit: input.limit,
+          }),
+      }),
+      get_recent_messages: tool({
+        description:
+          'Fetch newest messages in a conversation, optionally filtered by sender label/handle.',
+        inputSchema: z.object({
+          conversation: z.string().optional(),
+          chat_id: z.number().int().optional(),
+          sender: z.string().optional(),
+          offset: z.number().int().min(0).max(5000).optional(),
+          limit: z.number().int().min(1).max(100).optional(),
+        }),
+        execute: async (input) =>
+          bridgeTool('get_recent_messages', {
+            chat_id: resolveScopedChatId(input),
+            sender: input.sender,
+            offset: input.offset,
             limit: input.limit,
           }),
       }),
