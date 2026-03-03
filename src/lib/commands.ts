@@ -1,5 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  AssistantTurnRequest,
+  AssistantTurnResponse,
   Chat,
   PaginatedMessages,
   SearchResponse,
@@ -169,4 +171,10 @@ export async function getTimelineGroupChildren(
   childLevel: TimelineLevel,
 ): Promise<TimelineNodeList> {
   return invoke("get_timeline_group_children", { nodeId, childLevel });
+}
+
+export async function assistantRunTurn(
+  request: AssistantTurnRequest,
+): Promise<AssistantTurnResponse> {
+  return invoke("assistant_run_turn", { request });
 }

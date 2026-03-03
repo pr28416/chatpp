@@ -2,6 +2,10 @@ import * as React from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import { assistantRunTurn, fetchChats } from "@/lib/commands";
+import {
+  appendEventToDisplayBlocks,
+  syncDisplayBlocksWithFinalText,
+} from "@/lib/assistant-stream-blocks";
 import type {
   AssistantConversationContext,
   AssistantMention,
@@ -215,6 +219,7 @@ export default function App() {
       created_at: new Date().toISOString(),
       status: "streaming",
       processing_events: [],
+      display_blocks: [],
       processing_duration_ms: 0,
     });
     updateAssistantUi({
@@ -249,6 +254,11 @@ export default function App() {
           if (!payload) return;
           updateAssistantMessage(pendingAssistantId, (previous) => {
             const nextEvents = [...(previous?.processing_events ?? []), payload];
+            const nextBlocks = appendEventToDisplayBlocks(
+              previous?.display_blocks ?? [],
+              payload,
+              pendingAssistantId,
+            );
             let nextText = previous?.text ?? "";
             if (payload.kind === "text-delta" && payload.text) {
               nextText += payload.text;
@@ -259,6 +269,7 @@ export default function App() {
             return {
               text: nextText,
               processing_events: nextEvents,
+              display_blocks: nextBlocks,
               processing_duration_ms:
                 payload.duration_ms ??
                 previous?.processing_duration_ms ??
@@ -276,23 +287,36 @@ export default function App() {
         stream_id: streamId,
         conversation: convo,
       });
-      updateAssistantMessage(pendingAssistantId, {
+      updateAssistantMessage(pendingAssistantId, (previous) => ({
         text: response.text,
         status: "done",
+        display_blocks: syncDisplayBlocksWithFinalText(
+          previous?.display_blocks ?? [],
+          response.text,
+          pendingAssistantId,
+        ),
         processing_duration_ms: response.duration_ms,
         citations: response.citations,
         tool_traces: response.tool_traces,
-      });
+      }));
       updateAssistantUi({
         running: false,
         error: null,
       });
     } catch (err) {
       const reason = formatUnknownError(err);
-      updateAssistantMessage(pendingAssistantId, {
+      updateAssistantMessage(pendingAssistantId, (previous) => ({
         text: `Failed to generate response: ${reason}`,
         status: "error",
-      });
+        display_blocks: [
+          ...(previous?.display_blocks ?? []),
+          {
+            id: `${pendingAssistantId}:error:${Date.now()}`,
+            kind: "error",
+            text: `Error: ${reason}`,
+          },
+        ],
+      }));
       updateAssistantUi({
         running: false,
         error: reason,

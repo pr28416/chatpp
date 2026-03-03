@@ -1,9 +1,12 @@
 import * as React from "react";
 
+import { AssistantPane } from "@/components/assistant-pane";
 import { ChatList } from "@/components/chat-list";
 import { SearchSidebarPane } from "@/components/search-sidebar-pane";
 import { TimelinePane } from "@/components/timeline-pane";
 import type {
+  AssistantMention,
+  AssistantUiMessage,
   Chat,
   DateRange,
   PerChatTimelineUiState,
@@ -24,8 +27,17 @@ interface ContextPaneHostProps {
   scopeAll: boolean;
   onScopeAllChange: (value: boolean) => void;
   onJumpToRowid: (rowid: number) => void;
+  onJumpToCitation: (chatId: number | null, rowid: number) => void;
   onSearchResultsChange: (results: SearchResult[]) => void;
   onActiveResultChange: (rowid: number | null) => void;
+  assistantDraft: string;
+  assistantMentions: AssistantMention[];
+  assistantMessages: AssistantUiMessage[];
+  assistantRunning: boolean;
+  assistantError: string | null;
+  onAssistantDraftChange: (value: string) => void;
+  onAssistantMentionsChange: (mentions: AssistantMention[]) => void;
+  onAssistantSubmit: () => void;
   initialTimelineUiState?: PerChatTimelineUiState;
   onTimelineUiStateChange: (state: PerChatTimelineUiState) => void;
 }
@@ -43,8 +55,17 @@ export function ContextPaneHost({
   scopeAll,
   onScopeAllChange,
   onJumpToRowid,
+  onJumpToCitation,
   onSearchResultsChange,
   onActiveResultChange,
+  assistantDraft,
+  assistantMentions,
+  assistantMessages,
+  assistantRunning,
+  assistantError,
+  onAssistantDraftChange,
+  onAssistantMentionsChange,
+  onAssistantSubmit,
   initialTimelineUiState,
   onTimelineUiStateChange,
 }: ContextPaneHostProps) {
@@ -71,6 +92,24 @@ export function ContextPaneHost({
         onJumpToRowid={onJumpToRowid}
         onSearchResultsChange={onSearchResultsChange}
         onActiveResultChange={onActiveResultChange}
+      />
+    );
+  }
+
+  if (mode === "ai") {
+    return (
+      <AssistantPane
+        chats={chats}
+        selectedChatId={selectedChatId}
+        draft={assistantDraft}
+        mentions={assistantMentions}
+        messages={assistantMessages}
+        running={assistantRunning}
+        error={assistantError}
+        onDraftChange={onAssistantDraftChange}
+        onMentionsChange={onAssistantMentionsChange}
+        onSubmit={onAssistantSubmit}
+        onJumpToCitation={onJumpToCitation}
       />
     );
   }

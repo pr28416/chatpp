@@ -362,15 +362,17 @@ async function runTurn(payload) {
         break;
       }
       case 'reasoning-delta': {
-        if (part.text) {
-          emitStreamEvent({ kind: 'reasoning-delta', at_ms: nowMs(), text: part.text });
+        const reasoningText = extractDeltaText(part);
+        if (reasoningText) {
+          emitStreamEvent({ kind: 'reasoning-delta', at_ms: nowMs(), text: reasoningText });
         }
         break;
       }
       case 'text-delta': {
-        if (part.text) {
-          finalText += part.text;
-          emitStreamEvent({ kind: 'text-delta', at_ms: nowMs(), text: part.text });
+        const textDelta = extractDeltaText(part);
+        if (textDelta) {
+          finalText += textDelta;
+          emitStreamEvent({ kind: 'text-delta', at_ms: nowMs(), text: textDelta });
         }
         break;
       }
@@ -383,6 +385,20 @@ async function runTurn(payload) {
         break;
       }
       default:
+        if (isReasoningLikePart(part.type)) {
+          const reasoningText = extractDeltaText(part);
+          if (reasoningText) {
+            emitStreamEvent({ kind: 'reasoning-delta', at_ms: nowMs(), text: reasoningText });
+          }
+          break;
+        }
+        if (isTextLikePart(part.type)) {
+          const textDelta = extractDeltaText(part);
+          if (textDelta) {
+            finalText += textDelta;
+            emitStreamEvent({ kind: 'text-delta', at_ms: nowMs(), text: textDelta });
+          }
+        }
         break;
     }
   }
@@ -398,6 +414,38 @@ async function runTurn(payload) {
     tool_traces: toolTraceLog,
     duration_ms: durationMs,
   });
+}
+
+function extractDeltaText(part) {
+  if (!part || typeof part !== 'object') {
+    return '';
+  }
+  const candidates = [part.text, part.delta, part.value, part.content, part.outputText];
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.length > 0) {
+      return candidate;
+    }
+  }
+  return '';
+}
+
+function isReasoningLikePart(type) {
+  if (!type || typeof type !== 'string') {
+    return false;
+  }
+  const normalized = type.toLowerCase();
+  return normalized.includes('reasoning') && normalized.includes('delta');
+}
+
+function isTextLikePart(type) {
+  if (!type || typeof type !== 'string') {
+    return false;
+  }
+  const normalized = type.toLowerCase();
+  if (normalized.includes('reasoning')) {
+    return false;
+  }
+  return normalized.includes('text') && normalized.includes('delta');
 }
 
 function inferCitations(toolTraces, fallbackChatId) {

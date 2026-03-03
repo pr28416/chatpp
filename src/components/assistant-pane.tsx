@@ -2,10 +2,11 @@ import * as React from "react";
 import { AtSign, ChevronDown, Loader2, MessageSquare, Send, X } from "lucide-react";
 
 import { AssistantMarkdown } from "@/components/assistant-markdown";
-import { AssistantProcessingTrace } from "@/components/assistant-processing-trace";
+import { AssistantStreamBlocks } from "@/components/assistant-stream-blocks";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { buildInlineCitations } from "@/lib/assistant-citations";
+import { buildDisplayBlocksFromEvents } from "@/lib/assistant-stream-blocks";
 import { cn } from "@/lib/utils";
 import type {
   AssistantCitation,
@@ -239,6 +240,14 @@ export function AssistantPane({
         ) : null}
 
         {messages.map((message) => {
+          const orderedBlocks =
+            message.role === "assistant"
+              ? buildDisplayBlocksFromEvents(
+                  message.processing_events ?? [],
+                  message.id,
+                  message.text,
+                )
+              : [];
           const inlineCitations =
             message.role === "assistant"
               ? buildInlineCitations(message.text, message.citations ?? [], selectedChatId)
@@ -251,21 +260,29 @@ export function AssistantPane({
 
               {message.role === "assistant" ? (
                 <div className="space-y-4">
-                  <AssistantProcessingTrace
-                    events={message.processing_events ?? []}
-                    streaming={message.status === "streaming"}
-                    durationMs={message.processing_duration_ms}
-                  />
-                  <AssistantMarkdown
-                    text={message.text}
-                    citationByRowid={Object.fromEntries(
-                      inlineCitations.map((citation) => [
-                        citation.rowid,
-                        citation,
-                      ]),
-                    )}
-                    onJumpToCitation={onJumpToCitation}
-                  />
+                  {orderedBlocks.length > 0 ? (
+                    <AssistantStreamBlocks
+                      blocks={orderedBlocks}
+                      citationByRowid={Object.fromEntries(
+                        inlineCitations.map((citation) => [
+                          citation.rowid,
+                          citation,
+                        ]),
+                      )}
+                      onJumpToCitation={onJumpToCitation}
+                    />
+                  ) : (
+                    <AssistantMarkdown
+                      text={message.text}
+                      citationByRowid={Object.fromEntries(
+                        inlineCitations.map((citation) => [
+                          citation.rowid,
+                          citation,
+                        ]),
+                      )}
+                      onJumpToCitation={onJumpToCitation}
+                    />
+                  )}
                 </div>
               ) : (
                 <div className="whitespace-pre-wrap break-words leading-relaxed">{message.text}</div>

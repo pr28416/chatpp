@@ -125,6 +125,16 @@ export interface AssistantToolTrace {
   output: string;
 }
 
+export interface AssistantDisplayBlock {
+  id: string;
+  kind: "text" | "reasoning" | "tool_call" | "tool_result" | "error";
+  text?: string;
+  tool_name?: string;
+  tool_call_id?: string;
+  success?: boolean;
+  duration_ms?: number;
+}
+
 export interface AssistantUiMessage {
   id: string;
   role: "user" | "assistant";
@@ -132,6 +142,7 @@ export interface AssistantUiMessage {
   created_at: string;
   status?: "streaming" | "done" | "error";
   processing_events?: AssistantProcessingEvent[];
+  display_blocks?: AssistantDisplayBlock[];
   processing_duration_ms?: number;
   citations?: AssistantCitation[];
   tool_traces?: AssistantToolTrace[];
