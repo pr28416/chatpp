@@ -1,14 +1,21 @@
 import readline from 'node:readline';
 import { ToolLoopAgent, stepCountIs, tool } from 'ai';
 import { openai } from '@ai-sdk/openai';
+import { anthropic } from '@ai-sdk/anthropic';
+import { google } from '@ai-sdk/google';
+import { xai } from '@ai-sdk/xai';
 import { z } from 'zod';
 
 const SYSTEM_PROMPT = [
   'You are an investigative assistant for a local iMessage archive.',
   'Always use tools for factual claims about messages/timeline/SQL data.',
+  'If at least one conversation is in scope and the user asks for message/timeline facts, you must call at least one tool before the final answer.',
+  'Do not claim a conversation cannot be found until you have tried a relevant tool call.',
   'Use multiple tool calls when needed and cross-check evidence before concluding.',
   'For latest/last/recent message requests, prefer get_recent_messages instead of text search.',
   'If more than one conversation is in scope, always specify the target conversation when calling tools.',
+  'Conversation labels can be user-defined aliases and may not match participant names.',
+  'Treat provided conversation labels and @mentions as canonical references for tool selection.',
   'If evidence is insufficient, say so clearly.',
   'Keep answers concise and practical.',
   'Never use ambiguous pronouns like "they" without naming who spoke.',
@@ -19,6 +26,21 @@ const SYSTEM_PROMPT = [
 
 let currentRun = null;
 const pendingToolCalls = new Map();
+const SUPPORTED_MODELS_BY_PROVIDER = {
+  openai: new Set(['gpt-5.2', 'gpt-5.2-pro', 'gpt-5-mini', 'gpt-5-nano']),
+  anthropic: new Set(['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5']),
+  google: new Set([
+    'gemini-2.5-flash-lite',
+    'gemini-2.5-flash',
+    'gemini-2.5-pro',
+  ]),
+  xai: new Set([
+    'grok-4-latest',
+    'grok-4-0709',
+    'grok-4-fast-reasoning',
+    'grok-4-fast-non-reasoning',
+  ]),
+};
 
 const rl = readline.createInterface({
   input: process.stdin,
@@ -81,10 +103,21 @@ async function runTurn(payload) {
     : [];
   const conversation = Array.isArray(payload.conversation) ? payload.conversation : [];
   const userMessage = String(payload.user_message || '').trim();
+  const modelProvider = String(payload.model_provider || 'openai').trim().toLowerCase();
+  const modelId = String(payload.model_id || 'gpt-5-mini').trim();
 
   if (!userMessage) {
     throw new Error('user_message is required');
   }
+  const supportedModels = SUPPORTED_MODELS_BY_PROVIDER[modelProvider];
+  if (!supportedModels) {
+    throw new Error(`Unsupported model provider: ${modelProvider}`);
+  }
+  if (!supportedModels.has(modelId)) {
+    throw new Error(`Unsupported model for provider ${modelProvider}: ${modelId}`);
+  }
+
+  ensureProviderKey(modelProvider);
 
   const startedAt = Date.now();
   const nowMs = () => Math.max(0, Date.now() - startedAt);
@@ -111,6 +144,7 @@ async function runTurn(payload) {
     ? mentionedChatContexts.map((ctx) => describeChatContext(ctx)).join('; ')
     : 'None.';
   const toolTraceLog = [];
+  let preflightEvidenceText = '';
 
   const resolveScopedChatId = (input = {}) => {
     if (Number.isFinite(input.chat_id)) {
@@ -132,13 +166,18 @@ async function runTurn(payload) {
       return scopedChatIds[0];
     }
 
-    const normalizedConversation = conversation.toLowerCase();
+    const normalizedConversation = normalizeConversationToken(conversation);
     for (const context of chatContextById.values()) {
-      const label = context.label.toLowerCase();
-      const participants = context.participants.join(' ').toLowerCase();
+      const label = normalizeConversationToken(context.label);
+      const participants = normalizeConversationToken(context.participants.join(' '));
       if (label.includes(normalizedConversation) || participants.includes(normalizedConversation)) {
         return context.chat_id;
       }
+    }
+
+    // If only one conversation is in scope, default to it even when the free-text reference is noisy.
+    if (scopedChatIds.length === 1) {
+      return scopedChatIds[0];
     }
 
     throw new Error(`Unknown conversation reference: ${conversation}`);
@@ -219,11 +258,20 @@ async function runTurn(payload) {
     }
   };
 
+  if (shouldPrefetchRecentMessages(userMessage, scopedChatIds)) {
+    try {
+      const prefetched = await bridgeTool('get_recent_messages', {
+        chat_id: scopedChatIds[0],
+        limit: 12,
+      });
+      preflightEvidenceText = compact(safeStringify(prefetched), 1800);
+    } catch {
+      preflightEvidenceText = '';
+    }
+  }
+
   const agent = new ToolLoopAgent({
-    model: openai('gpt-5-mini', {
-      parallelToolCalls: true,
-      reasoningSummary: 'detailed',
-    }),
+    model: buildModel(modelProvider, modelId),
     instructions: SYSTEM_PROMPT,
     stopWhen: stepCountIs(16),
     tools: {
@@ -323,6 +371,10 @@ async function runTurn(payload) {
         `${turn.role?.toUpperCase() || 'USER'}: ${sanitizePromptText(String(turn.text || '').trim())}`,
     )
     .join('\n');
+  const contextListText =
+    Array.from(chatContextById.values())
+      .map((ctx) => `- ${ctx.label} (participants: ${ctx.participants.join(', ') || 'n/a'})`)
+      .join('\n') || '- none';
 
   const prompt = [
     selectedChatContext
@@ -330,77 +382,48 @@ async function runTurn(payload) {
       : 'Current conversation: none selected.',
     `Referenced conversations: ${mentionedContextText}`,
     'Use conversation names and participants in your reasoning and response, not internal IDs.',
+    'Reminder: a conversation label is not necessarily a participant name.',
     scopeDescription,
     scopedChatIds.length === 0
       ? 'If you need evidence, first ask the user to @mention a conversation before making factual claims.'
       : '',
+    preflightEvidenceText
+      ? `Pre-fetched recent messages evidence (JSON): ${preflightEvidenceText}`
+      : '',
+    'Available conversation references:',
+    contextListText,
     transcript ? `Recent conversation:\n${transcript}` : '',
     `User request: ${userMessage}`,
   ]
     .filter(Boolean)
     .join('\n\n');
 
-  const result = await agent.stream({ prompt });
+  let finalText = await streamResultToText(await agent.stream({ prompt }), nowMs);
 
-  let finalText = '';
-  let stepIndex = -1;
-
-  for await (const part of result.fullStream) {
-    switch (part.type) {
-      case 'start-step': {
-        stepIndex += 1;
-        emitStreamEvent({ kind: 'step-start', at_ms: nowMs(), step_index: stepIndex });
-        break;
-      }
-      case 'finish-step': {
-        emitStreamEvent({
-          kind: 'step-finish',
-          at_ms: nowMs(),
-          step_index: stepIndex,
-          finish_reason: part.finishReason,
-        });
-        break;
-      }
-      case 'reasoning-delta': {
-        const reasoningText = extractDeltaText(part);
-        if (reasoningText) {
-          emitStreamEvent({ kind: 'reasoning-delta', at_ms: nowMs(), text: reasoningText });
-        }
-        break;
-      }
-      case 'text-delta': {
-        const textDelta = extractDeltaText(part);
-        if (textDelta) {
-          finalText += textDelta;
-          emitStreamEvent({ kind: 'text-delta', at_ms: nowMs(), text: textDelta });
-        }
-        break;
-      }
-      case 'error': {
-        emitStreamEvent({
-          kind: 'run-error',
-          at_ms: nowMs(),
-          text: compact(String(part.error ?? 'Unknown stream error'), 200),
-        });
-        break;
-      }
-      default:
-        if (isReasoningLikePart(part.type)) {
-          const reasoningText = extractDeltaText(part);
-          if (reasoningText) {
-            emitStreamEvent({ kind: 'reasoning-delta', at_ms: nowMs(), text: reasoningText });
-          }
-          break;
-        }
-        if (isTextLikePart(part.type)) {
-          const textDelta = extractDeltaText(part);
-          if (textDelta) {
-            finalText += textDelta;
-            emitStreamEvent({ kind: 'text-delta', at_ms: nowMs(), text: textDelta });
-          }
-        }
-        break;
-    }
+  if (scopedChatIds.length > 0 && toolTraceLog.length === 0) {
+    const fallbackPlan = buildRequiredToolFallback({
+      userMessage,
+      scopedChatIds,
+      chatContextById,
+    });
+    emitStreamEvent({
+      kind: 'policy-fallback-start',
+      at_ms: nowMs(),
+      text: `No model tool call detected. Running fallback: ${fallbackPlan.tool_name}.`,
+    });
+    const fallbackOutput = await bridgeTool(fallbackPlan.tool_name, fallbackPlan.input);
+    const fallbackPrompt = [
+      prompt,
+      `Tool policy fallback reason: ${fallbackPlan.reason}.`,
+      `Fallback evidence from ${fallbackPlan.tool_name}: ${compact(safeStringify(fallbackOutput), 2500)}`,
+      'Now answer the user using this evidence. If multiple conversations are possible, explicitly ask for disambiguation.',
+    ].join('\n\n');
+    finalText = await streamResultToText(await agent.stream({ prompt: fallbackPrompt }), nowMs);
+    emitStreamEvent({
+      kind: 'policy-fallback-finish',
+      at_ms: nowMs(),
+      text: `Fallback completed using ${fallbackPlan.tool_name}.`,
+    });
   }
 
   const durationMs = nowMs();
@@ -446,6 +469,179 @@ function isTextLikePart(type) {
     return false;
   }
   return normalized.includes('text') && normalized.includes('delta');
+}
+
+async function streamResultToText(result, nowMs) {
+  let streamedText = '';
+  let stepIndex = -1;
+
+  for await (const part of result.fullStream) {
+    switch (part.type) {
+      case 'start-step': {
+        stepIndex += 1;
+        emitStreamEvent({ kind: 'step-start', at_ms: nowMs(), step_index: stepIndex });
+        break;
+      }
+      case 'finish-step': {
+        emitStreamEvent({
+          kind: 'step-finish',
+          at_ms: nowMs(),
+          step_index: stepIndex,
+          finish_reason: part.finishReason,
+        });
+        break;
+      }
+      case 'reasoning-delta': {
+        const reasoningText = extractDeltaText(part);
+        if (reasoningText) {
+          emitStreamEvent({ kind: 'reasoning-delta', at_ms: nowMs(), text: reasoningText });
+        }
+        break;
+      }
+      case 'text-delta': {
+        const textDelta = extractDeltaText(part);
+        if (textDelta) {
+          streamedText += textDelta;
+          emitStreamEvent({ kind: 'text-delta', at_ms: nowMs(), text: textDelta });
+        }
+        break;
+      }
+      case 'error': {
+        emitStreamEvent({
+          kind: 'run-error',
+          at_ms: nowMs(),
+          text: compact(String(part.error ?? 'Unknown stream error'), 200),
+        });
+        break;
+      }
+      default:
+        if (isReasoningLikePart(part.type)) {
+          const reasoningText = extractDeltaText(part);
+          if (reasoningText) {
+            emitStreamEvent({ kind: 'reasoning-delta', at_ms: nowMs(), text: reasoningText });
+          }
+          break;
+        }
+        if (isTextLikePart(part.type)) {
+          const textDelta = extractDeltaText(part);
+          if (textDelta) {
+            streamedText += textDelta;
+            emitStreamEvent({ kind: 'text-delta', at_ms: nowMs(), text: textDelta });
+          }
+        }
+        break;
+    }
+  }
+
+  return streamedText.trim();
+}
+
+function buildRequiredToolFallback({ userMessage, scopedChatIds, chatContextById }) {
+  const normalizedMessage = normalizeConversationToken(userMessage);
+  const explicitChatId = resolveChatFromMessageAliases(normalizedMessage, scopedChatIds, chatContextById);
+  const targetChatId = explicitChatId ?? (scopedChatIds.length === 1 ? scopedChatIds[0] : scopedChatIds[0]);
+  const latestLike = /\b(latest|recent|last|newest)\b/.test(normalizedMessage);
+  const searchLike = /\b(search|find|contains|mention|mentions)\b/.test(normalizedMessage);
+
+  if (latestLike) {
+    return {
+      tool_name: 'get_recent_messages',
+      reason: 'latest/recent intent requires concrete evidence',
+      input: {
+        chat_id: targetChatId,
+        limit: 12,
+      },
+    };
+  }
+
+  if (searchLike) {
+    return {
+      tool_name: 'search_messages',
+      reason: 'search intent requires concrete evidence',
+      input: {
+        chat_id: targetChatId,
+        q: extractSearchQuery(normalizedMessage) || normalizedMessage,
+        limit: 80,
+      },
+    };
+  }
+
+  return {
+    tool_name: 'get_recent_messages',
+    reason: 'tool-required policy fallback',
+    input: {
+      chat_id: targetChatId,
+      limit: 8,
+    },
+  };
+}
+
+function resolveChatFromMessageAliases(normalizedMessage, scopedChatIds, chatContextById) {
+  const aliasTokens = Array.from(
+    new Set(
+      (String(normalizedMessage || '').match(/@([a-z0-9_][a-z0-9_\-]*)/gi) || [])
+        .map((token) => normalizeConversationToken(token.replace(/^@+/, '')))
+        .filter(Boolean),
+    ),
+  );
+  if (aliasTokens.length === 0) {
+    return null;
+  }
+  for (const token of aliasTokens) {
+    const candidates = Array.from(chatContextById.values())
+      .filter((context) => scopedChatIds.includes(context.chat_id))
+      .filter((context) => {
+        const haystack = normalizeConversationToken(
+          `${context.label} ${context.participants.join(' ')}`,
+        );
+        return haystack.includes(token);
+      });
+    if (candidates.length === 1) {
+      return candidates[0].chat_id;
+    }
+  }
+  return null;
+}
+
+function extractSearchQuery(normalizedMessage) {
+  const match = String(normalizedMessage || '').match(/"([^"]+)"/);
+  if (match && match[1]) {
+    return match[1].trim();
+  }
+  return null;
+}
+
+function buildModel(provider, modelId) {
+  const options = {
+    parallelToolCalls: true,
+    reasoningSummary: 'detailed',
+  };
+  switch (provider) {
+    case 'openai':
+      return openai(modelId, options);
+    case 'anthropic':
+      return anthropic(modelId, options);
+    case 'google':
+      return google(modelId, options);
+    case 'xai':
+      return xai(modelId, options);
+    default:
+      throw new Error(`Unsupported model provider: ${provider}`);
+  }
+}
+
+function ensureProviderKey(provider) {
+  const keyByProvider = {
+    openai: 'OPENAI_API_KEY',
+    anthropic: 'ANTHROPIC_API_KEY',
+    google: 'GOOGLE_GENERATIVE_AI_API_KEY',
+    xai: 'XAI_API_KEY',
+  };
+  const envVar = keyByProvider[provider];
+  const value = envVar ? process.env[envVar] : '';
+  if (!value || !String(value).trim()) {
+    throw new Error(`${envVar} is required for ${provider} models`);
+  }
 }
 
 function inferCitations(toolTraces, fallbackChatId) {
@@ -571,6 +767,26 @@ function safeStringify(value) {
   } catch {
     return String(value);
   }
+}
+
+function normalizeConversationToken(value) {
+  return String(value || '')
+    .trim()
+    .replace(/^@+/, '')
+    .replace(/[^\p{L}\p{N}\s]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
+}
+
+function shouldPrefetchRecentMessages(userMessage, scopedChatIds) {
+  if (!Array.isArray(scopedChatIds) || scopedChatIds.length !== 1) {
+    return false;
+  }
+  const normalized = String(userMessage || '').toLowerCase();
+  if (!/\b(latest|recent|last)\b/.test(normalized)) {
+    return false;
+  }
+  return /\b(message|messages|chat|chats)\b/.test(normalized);
 }
 
 function emit(payload) {

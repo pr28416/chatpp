@@ -1,3 +1,5 @@
+import type { AssistantProvider } from "@/lib/assistant-models";
+
 // Types mirroring the Rust backend API response types
 
 export interface Chat {
@@ -157,6 +159,8 @@ export interface AssistantProcessingEvent {
     | "tool-start"
     | "tool-finish"
     | "text-delta"
+    | "policy-fallback-start"
+    | "policy-fallback-finish"
     | "run-finish"
     | "run-error";
   at_ms: number;
@@ -173,6 +177,7 @@ export interface AssistantProcessingEvent {
 
 export interface PerChatAssistantUiState {
   draft: string;
+  selected_model_id: string;
   mentions: AssistantMention[];
   messages: AssistantUiMessage[];
   running: boolean;
@@ -184,6 +189,8 @@ export interface AssistantTurnRequest {
   mentioned_chat_ids: number[];
   selected_chat_context?: AssistantConversationContext;
   mentioned_chat_contexts?: AssistantConversationContext[];
+  model_provider: AssistantProvider;
+  model_id: string;
   user_message: string;
   stream_id: string;
   conversation: Array<{
@@ -191,6 +198,8 @@ export interface AssistantTurnRequest {
     text: string;
   }>;
 }
+
+export type AssistantProviderAvailability = Record<AssistantProvider, boolean>;
 
 export interface AssistantConversationContext {
   chat_id: number;

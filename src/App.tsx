@@ -1,15 +1,25 @@
 import * as React from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
-import { assistantRunTurn, fetchChats } from "@/lib/commands";
+import {
+  assistantRunTurn,
+  fetchChats,
+  getAssistantProviderAvailability,
+} from "@/lib/commands";
 import {
   appendEventToDisplayBlocks,
   syncDisplayBlocksWithFinalText,
 } from "@/lib/assistant-stream-blocks";
+import {
+  DEFAULT_ASSISTANT_MODEL_ID,
+  getAssistantModelOption,
+  getMissingProviderKeyMessage,
+} from "@/lib/assistant-models";
 import type {
   AssistantConversationContext,
   AssistantMention,
   AssistantProcessingEvent,
+  AssistantProviderAvailability,
   AssistantUiMessage,
   Chat,
   PerChatAssistantUiState,
@@ -55,6 +65,7 @@ function defaultTimelineUiState(): PerChatTimelineUiState {
 function defaultAssistantUiState(): PerChatAssistantUiState {
   return {
     draft: "",
+    selected_model_id: DEFAULT_ASSISTANT_MODEL_ID,
     mentions: [],
     messages: [],
     running: false,
@@ -77,6 +88,13 @@ export default function App() {
   const [assistantUi, setAssistantUi] = React.useState<PerChatAssistantUiState>(
     defaultAssistantUiState(),
   );
+  const [assistantProviderAvailability, setAssistantProviderAvailability] =
+    React.useState<AssistantProviderAvailability>({
+      openai: false,
+      anthropic: false,
+      google: false,
+      xai: false,
+    });
   const [searchMatchesByChat, setSearchMatchesByChat] = React.useState<
     Record<number, number[]>
   >({});
@@ -104,6 +122,17 @@ export default function App() {
           "Failed to load conversations. Make sure Full Disk Access is enabled for this app in System Settings > Privacy & Security.",
         );
         setLoading(false);
+      });
+  }, []);
+
+  React.useEffect(() => {
+    getAssistantProviderAvailability()
+      .then((availability) => {
+        setAssistantProviderAvailability(availability);
+      })
+      .catch((err) => {
+        // eslint-disable-next-line no-console
+        console.error("Failed to load assistant provider availability:", err);
       });
   }, []);
 
@@ -201,6 +230,41 @@ export default function App() {
     if (!trimmed || current.running) {
       return;
     }
+    const selectedModel = getAssistantModelOption(current.selected_model_id);
+    if (!selectedModel) {
+      updateAssistantUi({
+        error: `Unknown selected model: ${current.selected_model_id}`,
+      });
+      return;
+    }
+    if (!assistantProviderAvailability[selectedModel.provider]) {
+      updateAssistantUi({
+        error: getMissingProviderKeyMessage(selectedModel),
+      });
+      return;
+    }
+
+    const validMentionIds = current.mentions
+      .filter((mention: AssistantMention) => trimmed.includes(`@${mention.label}`))
+      .map((mention: AssistantMention) => mention.chatId);
+    const inferredScope = inferMentionedChatScopeFromDraft(trimmed, chats);
+    const structuredMentionTokens = new Set(
+      current.mentions
+        .map((mention) => normalizeMentionToken(mention.label).split(" ")[0])
+        .filter((value) => value.length > 0),
+    );
+    const unresolvedAmbiguous = inferredScope.ambiguousTokens.filter(
+      (token) => !structuredMentionTokens.has(normalizeMentionToken(token.replace(/^@+/, ""))),
+    );
+    if (unresolvedAmbiguous.length > 0) {
+      updateAssistantUi({
+        error: `Mention is ambiguous: ${unresolvedAmbiguous.join(", ")}. Pick a specific conversation from the @ menu.`,
+      });
+      return;
+    }
+    const dedupedMentionIds = Array.from(
+      new Set([...validMentionIds, ...inferredScope.chatIds]),
+    );
 
     const nowIso = new Date().toISOString();
     const userMsg: AssistantUiMessage = {
@@ -228,11 +292,6 @@ export default function App() {
       running: true,
       error: null,
     });
-
-    const validMentionIds = current.mentions
-      .filter((mention: AssistantMention) => trimmed.includes(`@${mention.label}`))
-      .map((mention: AssistantMention) => mention.chatId);
-    const dedupedMentionIds = Array.from(new Set(validMentionIds));
     const mentionedChatContexts = dedupedMentionIds
       .map((chatId) =>
         buildAssistantConversationContext(
@@ -283,6 +342,8 @@ export default function App() {
         selected_chat_id: null,
         mentioned_chat_ids: dedupedMentionIds,
         mentioned_chat_contexts: mentionedChatContexts,
+        model_provider: selectedModel.provider,
+        model_id: selectedModel.id,
         user_message: trimmed,
         stream_id: streamId,
         conversation: convo,
@@ -327,6 +388,7 @@ export default function App() {
       }
     }
   }, [
+    assistantProviderAvailability,
     appendAssistantMessage,
     assistantUi,
     chats,
@@ -426,16 +488,21 @@ export default function App() {
       onJumpToCitation={handleAssistantCitationJump}
       onHighlightChange={setActiveHighlightRowid}
       assistantDraft={assistantUi.draft}
+      assistantSelectedModelId={assistantUi.selected_model_id}
       assistantMentions={assistantUi.mentions}
       assistantMessages={assistantUi.messages}
       assistantRunning={assistantUi.running}
       assistantError={assistantUi.error}
+      assistantProviderAvailability={assistantProviderAvailability}
       onAssistantDraftChange={(value) =>
         updateAssistantUi({
           draft: value,
           mentions: assistantUi.mentions.filter((m) => value.includes(`@${m.label}`)),
           error: null,
         })
+      }
+      onAssistantModelChange={(selected_model_id) =>
+        updateAssistantUi({ selected_model_id, error: null })
       }
       onAssistantMentionsChange={(mentions) => updateAssistantUi({ mentions })}
       onAssistantSubmit={handleAssistantSubmit}
@@ -467,6 +534,56 @@ function formatAssistantChatLabel(chat: Chat): string {
     return participants.join(", ");
   }
   return "Conversation";
+}
+
+function inferMentionedChatScopeFromDraft(
+  draft: string,
+  chats: Chat[],
+): { chatIds: number[]; ambiguousTokens: string[] } {
+  const tokens = Array.from(
+    new Set(
+      [...draft.matchAll(/@([^\s@]{2,})/g)]
+        .map((match) => normalizeMentionToken(match[1]))
+        .filter((value) => value.length > 0),
+    ),
+  );
+
+  if (tokens.length === 0) {
+    return { chatIds: [], ambiguousTokens: [] };
+  }
+
+  const matches: number[] = [];
+  const ambiguousTokens: string[] = [];
+  for (const token of tokens) {
+    const found = chats.filter((chat) => {
+      const index = normalizeMentionToken(
+        [
+          chat.display_name ?? "",
+          ...chat.participants,
+          ...chat.participant_handles,
+          chat.chat_identifier,
+        ].join(" "),
+      );
+      return index.includes(token);
+    });
+    if (found.length === 1) {
+      matches.push(found[0].id);
+      continue;
+    }
+    if (found.length > 1) {
+      ambiguousTokens.push(`@${token}`);
+    }
+  }
+
+  return { chatIds: matches, ambiguousTokens };
+}
+
+function normalizeMentionToken(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function formatUnknownError(err: unknown): string {
