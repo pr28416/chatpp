@@ -59,6 +59,7 @@ export function AssistantPane({
   const scrollRef = React.useRef<HTMLDivElement | null>(null);
   const textareaRef = React.useRef<HTMLTextAreaElement | null>(null);
   const composerRef = React.useRef<HTMLDivElement | null>(null);
+  const mentionOptionRefs = React.useRef<Array<HTMLButtonElement | null>>([]);
 
   const mentionCandidates = React.useMemo(() => {
     const q = mentionQuery.trim().toLowerCase();
@@ -124,6 +125,17 @@ export function AssistantPane({
     textareaRef.current.style.height = "auto";
     textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, MAX_TEXTAREA_HEIGHT)}px`;
   }, [draft]);
+
+  React.useEffect(() => {
+    mentionOptionRefs.current = mentionOptionRefs.current.slice(0, mentionCandidates.length);
+  }, [mentionCandidates.length]);
+
+  React.useEffect(() => {
+    if (!showMentionMenu || mentionCandidates.length === 0) {
+      return;
+    }
+    mentionOptionRefs.current[selectedMentionIdx]?.scrollIntoView({ block: "nearest" });
+  }, [mentionCandidates.length, selectedMentionIdx, showMentionMenu]);
 
   const applyMentionDetection = React.useCallback((text: string, caret: number) => {
     const left = text.slice(0, caret);
@@ -360,6 +372,9 @@ export function AssistantPane({
                   <button
                     key={candidate.chatId}
                     type="button"
+                    ref={(node) => {
+                      mentionOptionRefs.current[idx] = node;
+                    }}
                     className={cn(
                       "w-full rounded-md px-2 py-1.5 text-left transition-colors",
                       idx === selectedMentionIdx
