@@ -4,6 +4,8 @@ import { ContextPaneHost } from "@/components/context-pane-host";
 import { MessageView } from "@/components/message-view";
 import { ResizableHandle } from "@/components/ui/resizable";
 import type {
+  AssistantMention,
+  AssistantUiMessage,
   Chat,
   DateRange,
   PerChatTimelineUiState,
@@ -29,14 +31,24 @@ interface WorkspaceShellProps {
   searchMatchRowids?: Set<number>;
   onActiveResultChange: (rowid: number | null) => void;
   requestedJumpRowid: number | null;
-  onJumpHandled: (rowid: number) => void;
+  requestedJumpChatId: number | null;
+  onJumpHandled: (rowid: number, chatId: number | null) => void;
   onJumpToRowid: (rowid: number) => void;
+  onJumpToCitation: (chatId: number | null, rowid: number) => void;
   onHighlightChange: (rowid: number | null) => void;
+  assistantDraft: string;
+  assistantMentions: AssistantMention[];
+  assistantMessages: AssistantUiMessage[];
+  assistantRunning: boolean;
+  assistantError: string | null;
+  onAssistantDraftChange: (value: string) => void;
+  onAssistantMentionsChange: (mentions: AssistantMention[]) => void;
+  onAssistantSubmit: () => void;
   initialTimelineUiState?: PerChatTimelineUiState;
   onTimelineUiStateChange: (state: PerChatTimelineUiState) => void;
 }
 
-const RAIL_WIDTH = 82;
+const RAIL_WIDTH = 84;
 const HANDLE_WIDTH_APPROX = 8;
 const CONTEXT_MIN = 260;
 const CONTEXT_DEFAULT = 320;
@@ -63,9 +75,19 @@ export function WorkspaceShell({
   searchMatchRowids,
   onActiveResultChange,
   requestedJumpRowid,
+  requestedJumpChatId,
   onJumpHandled,
   onJumpToRowid,
+  onJumpToCitation,
   onHighlightChange,
+  assistantDraft,
+  assistantMentions,
+  assistantMessages,
+  assistantRunning,
+  assistantError,
+  onAssistantDraftChange,
+  onAssistantMentionsChange,
+  onAssistantSubmit,
   initialTimelineUiState,
   onTimelineUiStateChange,
 }: WorkspaceShellProps) {
@@ -183,8 +205,17 @@ export function WorkspaceShell({
               scopeAll={scopeAll}
               onScopeAllChange={onScopeAllChange}
               onJumpToRowid={onJumpToRowid}
+              onJumpToCitation={onJumpToCitation}
               onSearchResultsChange={onSearchResultsChange}
               onActiveResultChange={onActiveResultChange}
+              assistantDraft={assistantDraft}
+              assistantMentions={assistantMentions}
+              assistantMessages={assistantMessages}
+              assistantRunning={assistantRunning}
+              assistantError={assistantError}
+              onAssistantDraftChange={onAssistantDraftChange}
+              onAssistantMentionsChange={onAssistantMentionsChange}
+              onAssistantSubmit={onAssistantSubmit}
               initialTimelineUiState={initialTimelineUiState}
               onTimelineUiStateChange={onTimelineUiStateChange}
             />
@@ -205,6 +236,7 @@ export function WorkspaceShell({
                 activeMode === "search" ? searchMatchRowids : undefined
               }
               requestedJumpRowid={requestedJumpRowid}
+              requestedJumpChatId={requestedJumpChatId}
               onJumpHandled={onJumpHandled}
               onHighlightChange={onHighlightChange}
             />

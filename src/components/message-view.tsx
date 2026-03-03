@@ -15,7 +15,8 @@ interface MessageViewProps {
   searchQuery?: string;
   searchMatchRowids?: Set<number>;
   requestedJumpRowid?: number | null;
-  onJumpHandled?: (rowid: number) => void;
+  requestedJumpChatId?: number | null;
+  onJumpHandled?: (rowid: number, chatId: number | null) => void;
   onHighlightChange?: (rowid: number | null) => void;
 }
 
@@ -25,6 +26,8 @@ interface MessageCacheEntry {
   hasMore: boolean;
   cachedAt: number;
 }
+
+type PageLoadResult = "loaded" | "exhausted" | "skipped" | "stale";
 
 const MESSAGE_CACHE_TTL_MS = 2 * 60 * 1000;
 const MESSAGE_CACHE_MAX = 20;
@@ -87,12 +90,25 @@ function maybeLogDev(message: string, ...args: unknown[]) {
   }
 }
 
+function isVisibleInRoot(target: Element, root: Element): boolean {
+  const targetRect = target.getBoundingClientRect();
+  const rootRect = root.getBoundingClientRect();
+  return targetRect.bottom > rootRect.top && targetRect.top < rootRect.bottom;
+}
+
+function nextAnimationFrame(): Promise<void> {
+  return new Promise((resolve) => {
+    window.requestAnimationFrame(() => resolve());
+  });
+}
+
 export function MessageView({
   chat,
   dateRange,
   searchQuery,
   searchMatchRowids,
   requestedJumpRowid,
+  requestedJumpChatId,
   onJumpHandled,
   onHighlightChange,
 }: MessageViewProps) {
@@ -125,6 +141,14 @@ export function MessageView({
   const selectionStartRef = React.useRef<number | null>(null);
   const initialFetchCountRef = React.useRef(0);
   const fetchWindowTimerRef = React.useRef<number | null>(null);
+  const backfillInProgressRef = React.useRef(false);
+  const backfillQueuedRef = React.useRef(false);
+
+  const chatRef = React.useRef(chat);
+  const messagesRef = React.useRef(messages);
+  const hasPreviousRef = React.useRef(hasPrevious);
+  const hasMoreRef = React.useRef(hasMore);
+  const canAutoPaginateRef = React.useRef(false);
 
   const [highlightedRowid, setHighlightedRowid] = React.useState<number | null>(null);
 
@@ -147,6 +171,22 @@ export function MessageView({
   }, []);
 
   const canAutoPaginate = isInitialLoadComplete && !loading;
+
+  React.useEffect(() => {
+    chatRef.current = chat;
+  }, [chat]);
+  React.useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+  React.useEffect(() => {
+    hasPreviousRef.current = hasPrevious;
+  }, [hasPrevious]);
+  React.useEffect(() => {
+    hasMoreRef.current = hasMore;
+  }, [hasMore]);
+  React.useEffect(() => {
+    canAutoPaginateRef.current = canAutoPaginate;
+  }, [canAutoPaginate]);
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const virtualizerRef = React.useRef<any>(null);
@@ -190,9 +230,10 @@ export function MessageView({
 
   React.useEffect(() => {
     if (requestedJumpRowid == null) return;
+    if (requestedJumpChatId != null && chat?.id !== requestedJumpChatId) return;
     jumpToRowid(requestedJumpRowid);
-    onJumpHandled?.(requestedJumpRowid);
-  }, [jumpToRowid, onJumpHandled, requestedJumpRowid]);
+    onJumpHandled?.(requestedJumpRowid, requestedJumpChatId ?? chat?.id ?? null);
+  }, [chat?.id, jumpToRowid, onJumpHandled, requestedJumpChatId, requestedJumpRowid]);
 
   React.useEffect(() => {
     onHighlightChange?.(highlightedRowid);
@@ -257,8 +298,11 @@ export function MessageView({
       options: { loadId: number },
     ) => {
       setMessages(data.messages);
+      messagesRef.current = data.messages;
       setHasPrevious(hasDateRange ? data.messages.length > 0 : data.has_previous);
       setHasMore(hasDateRange ? data.messages.length > 0 : data.has_more);
+      hasPreviousRef.current = hasDateRange ? data.messages.length > 0 : data.has_previous;
+      hasMoreRef.current = hasDateRange ? data.messages.length > 0 : data.has_more;
 
       const finishInitialLoad = () => {
         setIsInitialLoadComplete(true);
@@ -312,8 +356,11 @@ export function MessageView({
       activeLoadIdRef.current += 1;
       busyRef.current = false;
       setMessages([]);
+      messagesRef.current = [];
       setHasPrevious(false);
       setHasMore(false);
+      hasPreviousRef.current = false;
+      hasMoreRef.current = false;
       setLoading(false);
       setLoadingDirection(null);
       setIsInitialLoadComplete(false);
@@ -327,8 +374,11 @@ export function MessageView({
 
     busyRef.current = false;
     setMessages([]);
+    messagesRef.current = [];
     setHasPrevious(false);
     setHasMore(false);
+    hasPreviousRef.current = false;
+    hasMoreRef.current = false;
     setHighlightedRowid(null);
     setIsInitialLoadComplete(false);
     setLoading(true);
@@ -412,76 +462,106 @@ export function MessageView({
     }
   });
 
-  const loadPrevious = React.useCallback(async () => {
-    if (!chat || messages.length === 0 || busyRef.current || !hasPrevious || !canAutoPaginate) {
-      return;
+  const loadPrevious = React.useCallback(async (): Promise<PageLoadResult> => {
+    if (!chatRef.current || messagesRef.current.length === 0 || busyRef.current || !canAutoPaginateRef.current) {
+      return "skipped";
+    }
+
+    if (!hasPreviousRef.current) {
+      return "exhausted";
     }
 
     const loadId = activeLoadIdRef.current;
-    const firstRowId = messages[0].rowid;
+    const firstRowId = messagesRef.current[0].rowid;
+    const activeChat = chatRef.current;
+    if (!activeChat) {
+      return "skipped";
+    }
 
     busyRef.current = true;
     setLoadingDirection("previous");
 
     try {
-      const data = await fetchMessages(chat.id, {
+      const data = await fetchMessages(activeChat.id, {
         before_rowid: firstRowId,
         limit: PAGE_LOAD_LIMIT,
       });
 
-      if (loadId !== activeLoadIdRef.current) return;
+      if (loadId !== activeLoadIdRef.current) return "stale";
 
       const newDisplayCount = data.messages.filter((m) => !m.is_tapback).length;
       scrollToAfterPrepend.current = newDisplayCount;
 
-      setMessages((prev) => [...data.messages, ...prev]);
+      setMessages((prev) => {
+        const next = [...data.messages, ...prev];
+        messagesRef.current = next;
+        return next;
+      });
       setHasPrevious(data.has_previous);
+      hasPreviousRef.current = data.has_previous;
+      return data.messages.length > 0 ? "loaded" : "exhausted";
     } catch (err) {
       if (loadId === activeLoadIdRef.current) {
         // eslint-disable-next-line no-console
         console.error("Failed to fetch previous messages:", err);
       }
+      return "skipped";
     } finally {
       if (loadId === activeLoadIdRef.current) {
         busyRef.current = false;
         setLoadingDirection(null);
       }
     }
-  }, [chat, messages, hasPrevious, canAutoPaginate]);
+  }, []);
 
-  const loadMore = React.useCallback(async () => {
-    if (!chat || messages.length === 0 || busyRef.current || !hasMore || !canAutoPaginate) {
-      return;
+  const loadMore = React.useCallback(async (): Promise<PageLoadResult> => {
+    if (!chatRef.current || messagesRef.current.length === 0 || busyRef.current || !canAutoPaginateRef.current) {
+      return "skipped";
+    }
+
+    if (!hasMoreRef.current) {
+      return "exhausted";
     }
 
     const loadId = activeLoadIdRef.current;
-    const lastRowId = messages[messages.length - 1].rowid;
+    const lastRowId = messagesRef.current[messagesRef.current.length - 1].rowid;
+    const activeChat = chatRef.current;
+    if (!activeChat) {
+      return "skipped";
+    }
 
     busyRef.current = true;
     setLoadingDirection("more");
 
     try {
-      const data = await fetchMessages(chat.id, {
+      const data = await fetchMessages(activeChat.id, {
         after_rowid: lastRowId,
         limit: PAGE_LOAD_LIMIT,
       });
 
-      if (loadId !== activeLoadIdRef.current) return;
+      if (loadId !== activeLoadIdRef.current) return "stale";
 
-      setMessages((prev) => [...prev, ...data.messages]);
+      setMessages((prev) => {
+        const next = [...prev, ...data.messages];
+        messagesRef.current = next;
+        return next;
+      });
       setHasMore(data.has_more);
+      hasMoreRef.current = data.has_more;
+      return data.messages.length > 0 ? "loaded" : "exhausted";
     } catch (err) {
       if (loadId === activeLoadIdRef.current) {
         // eslint-disable-next-line no-console
         console.error("Failed to fetch more messages:", err);
       }
+      return "skipped";
     } finally {
       if (loadId === activeLoadIdRef.current) {
         busyRef.current = false;
         setLoadingDirection(null);
       }
     }
-  }, [chat, messages, hasMore, canAutoPaginate]);
+  }, []);
 
   const loadPreviousRef = React.useRef(loadPrevious);
   const loadMoreRef = React.useRef(loadMore);
@@ -491,6 +571,103 @@ export function MessageView({
   React.useEffect(() => {
     loadMoreRef.current = loadMore;
   }, [loadMore]);
+
+  const backfillVisibleSentinels = React.useCallback(async () => {
+    if (backfillInProgressRef.current) return;
+    if (!canAutoPaginateRef.current) return;
+    if (messagesRef.current.length === 0) return;
+
+    const root = scrollRef.current;
+    if (!root) return;
+
+    backfillInProgressRef.current = true;
+    try {
+      while (true) {
+        if (!canAutoPaginateRef.current) break;
+
+        const topSentinel = topSentinelRef.current;
+        const bottomSentinel = bottomSentinelRef.current;
+
+        const topVisible = !!(topSentinel && hasPreviousRef.current && isVisibleInRoot(topSentinel, root));
+        const bottomVisible = !!(bottomSentinel && hasMoreRef.current && isVisibleInRoot(bottomSentinel, root));
+
+        if (!topVisible && !bottomVisible) break;
+
+        const beforeFirst = messagesRef.current[0]?.rowid ?? null;
+        const beforeLast = messagesRef.current[messagesRef.current.length - 1]?.rowid ?? null;
+        const beforeCount = messagesRef.current.length;
+        const beforeHasPrevious = hasPreviousRef.current;
+        const beforeHasMore = hasMoreRef.current;
+
+        let progressed = false;
+        if (topVisible && hasPreviousRef.current) {
+          const result = await loadPreviousRef.current();
+          if (result === "loaded") progressed = true;
+        }
+
+        const nextBottomSentinel = bottomSentinelRef.current;
+        const bottomStillVisible = !!(
+          nextBottomSentinel &&
+          hasMoreRef.current &&
+          isVisibleInRoot(nextBottomSentinel, root)
+        );
+        if (bottomStillVisible && hasMoreRef.current) {
+          const result = await loadMoreRef.current();
+          if (result === "loaded") progressed = true;
+        }
+
+        const afterFirst = messagesRef.current[0]?.rowid ?? null;
+        const afterLast = messagesRef.current[messagesRef.current.length - 1]?.rowid ?? null;
+        const afterCount = messagesRef.current.length;
+        const afterHasPrevious = hasPreviousRef.current;
+        const afterHasMore = hasMoreRef.current;
+
+        const changed =
+          beforeFirst !== afterFirst ||
+          beforeLast !== afterLast ||
+          beforeCount !== afterCount ||
+          beforeHasPrevious !== afterHasPrevious ||
+          beforeHasMore !== afterHasMore;
+
+        if (!progressed && !changed) {
+          break;
+        }
+
+        // Yield once per loop so layout/intersection state can settle and UI stays responsive.
+        await nextAnimationFrame();
+      }
+    } finally {
+      backfillInProgressRef.current = false;
+    }
+  }, []);
+
+  const scheduleBackfill = React.useCallback(() => {
+    if (backfillInProgressRef.current || backfillQueuedRef.current) return;
+    backfillQueuedRef.current = true;
+    window.requestAnimationFrame(() => {
+      backfillQueuedRef.current = false;
+      void backfillVisibleSentinels();
+    });
+  }, [backfillVisibleSentinels]);
+
+  React.useEffect(() => {
+    if (!chat || !isInitialLoadComplete || loading) return;
+    const id = window.requestAnimationFrame(() => {
+      scheduleBackfill();
+    });
+    return () => window.cancelAnimationFrame(id);
+  }, [chat, isInitialLoadComplete, loading, messages.length, hasPrevious, hasMore, scheduleBackfill]);
+
+  React.useEffect(() => {
+    const root = scrollRef.current;
+    if (!root || !chat) return;
+    const observer = new ResizeObserver(() => {
+      if (!canAutoPaginateRef.current) return;
+      scheduleBackfill();
+    });
+    observer.observe(root);
+    return () => observer.disconnect();
+  }, [chat, scheduleBackfill]);
 
   React.useEffect(() => {
     if (!canAutoPaginate) return;
@@ -502,14 +679,14 @@ export function MessageView({
     const observer = new IntersectionObserver(
       (entries) => {
         if (entries[0]?.isIntersecting) {
-          void loadPreviousRef.current();
+          scheduleBackfill();
         }
       },
       { root, threshold: 0.1 },
     );
     observer.observe(sentinel);
     return () => observer.disconnect();
-  }, [chat, hasPrevious, canAutoPaginate]);
+  }, [chat, hasPrevious, canAutoPaginate, scheduleBackfill]);
 
   React.useEffect(() => {
     if (!canAutoPaginate || !hasMore) return;
@@ -521,14 +698,14 @@ export function MessageView({
     const observer = new IntersectionObserver(
       (entries) => {
         if (entries[0]?.isIntersecting) {
-          void loadMoreRef.current();
+          scheduleBackfill();
         }
       },
       { root, threshold: 0.1 },
     );
     observer.observe(sentinel);
     return () => observer.disconnect();
-  }, [chat, hasMore, canAutoPaginate]);
+  }, [chat, hasMore, canAutoPaginate, scheduleBackfill]);
 
   if (!chat) {
     return (

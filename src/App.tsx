@@ -81,6 +81,7 @@ export default function App() {
 
   const {
     requestedJumpRowid,
+    requestedJumpChatId,
     requestJump,
     acknowledgeJump,
     setActiveHighlightRowid,
@@ -324,10 +325,8 @@ export default function App() {
     (chatId: number | null, rowid: number) => {
       if (chatId != null && chatId !== selectedChatId) {
         setSelectedChatId(chatId);
-        window.setTimeout(() => requestJump(rowid), 40);
-        return;
       }
-      requestJump(rowid);
+      requestJump(rowid, chatId ?? selectedChatId ?? null);
     },
     [requestJump, selectedChatId],
   );
@@ -367,6 +366,7 @@ export default function App() {
           chat={selectedChat}
           dateRange={selectedSearchUi.dateRange}
           requestedJumpRowid={requestedJumpRowid}
+          requestedJumpChatId={requestedJumpChatId}
           onJumpHandled={acknowledgeJump}
           onHighlightChange={setActiveHighlightRowid}
           searchQuery={selectedSearchUi.searchQuery}
@@ -396,6 +396,7 @@ export default function App() {
       searchMatchRowids={selectedSearchMatchRowids}
       onActiveResultChange={setActiveHighlightRowid}
       requestedJumpRowid={requestedJumpRowid}
+      requestedJumpChatId={requestedJumpChatId}
       onJumpHandled={acknowledgeJump}
       onJumpToRowid={requestJump}
       onJumpToCitation={handleAssistantCitationJump}
