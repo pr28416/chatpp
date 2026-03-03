@@ -3,7 +3,6 @@ import { AtSign, ChevronDown, Loader2, MessageSquare, Send, X } from "lucide-rea
 
 import { AssistantMarkdown } from "@/components/assistant-markdown";
 import { AssistantProcessingTrace } from "@/components/assistant-processing-trace";
-import { PaneNavHeader } from "@/components/pane-nav-header";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { buildInlineCitations } from "@/lib/assistant-citations";
@@ -33,6 +32,7 @@ interface MentionCandidate {
   chatId: number;
   label: string;
   description: string;
+  isThisChat: boolean;
 }
 
 const MAX_TEXTAREA_HEIGHT = 180;
@@ -50,7 +50,6 @@ export function AssistantPane({
   onSubmit,
   onJumpToCitation,
 }: AssistantPaneProps) {
-  const [isHeaderCollapsed, setIsHeaderCollapsed] = React.useState(false);
   const [showMentionMenu, setShowMentionMenu] = React.useState(false);
   const [mentionQuery, setMentionQuery] = React.useState("");
   const [selectedMentionIdx, setSelectedMentionIdx] = React.useState(0);
@@ -81,13 +80,18 @@ export function AssistantPane({
           chatId: chat.id,
           label,
           description: chat.participant_handles.join(", "),
+          isThisChat: chat.id === selectedChatId,
           index,
         };
       })
-      .filter((item) => item.chatId !== selectedChatId)
       .filter((item) => (q ? item.index.includes(q) || item.label.toLowerCase().includes(q) : true))
       .slice(0, 12)
-      .map(({ chatId, label, description }) => ({ chatId, label, description }));
+      .map(({ chatId, label, description, isThisChat }) => ({
+        chatId,
+        label,
+        description,
+        isThisChat,
+      }));
   }, [chats, mentionQuery, selectedChatId]);
 
   React.useEffect(() => {
@@ -221,52 +225,23 @@ export function AssistantPane({
     setMentionRange(null);
   }, [draft, onSubmit, running]);
 
-  const activeChat = React.useMemo(
-    () => chats.find((chat) => chat.id === selectedChatId) ?? null,
-    [chats, selectedChatId],
-  );
-
-  if (!activeChat) {
-    return (
-      <div className="h-full flex items-center justify-center p-6 text-center text-sm text-muted-foreground">
-        Select a conversation to chat with your message history.
-      </div>
-    );
-  }
-
   return (
     <div className="h-full min-h-0 flex flex-col bg-transparent relative">
-      <PaneNavHeader
-        title="AI"
-        collapsed={isHeaderCollapsed}
-        accessory={(
-          <div className="rounded-xl border border-border bg-background/95 p-2 shadow-xs">
-            <div className="text-xs text-muted-foreground">
-              Context includes: <span className="text-foreground font-medium">{formatChatName(activeChat)}</span>
-            </div>
-            <div className="mt-1 text-[11px] text-muted-foreground">
-              Type <span className="font-medium text-foreground">@</span> to reference other chats.
-            </div>
-          </div>
-        )}
-      />
-
       <div
         ref={scrollRef}
-        onScroll={(evt) => setIsHeaderCollapsed(evt.currentTarget.scrollTop > 12)}
         className="flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-5"
         style={{ paddingBottom: composerHeight + 20 }}
       >
         {messages.length === 0 ? (
           <div className="rounded-lg border border-dashed border-border bg-card/70 p-3 text-xs text-muted-foreground">
-            Ask about this conversation, cross-chat patterns, or timeline trends.
+            Ask about your archive, then add chats with @mentions as needed.
           </div>
         ) : null}
 
         {messages.map((message) => {
           const inlineCitations =
             message.role === "assistant"
-              ? buildInlineCitations(message.text, message.citations ?? [], activeChat.id)
+              ? buildInlineCitations(message.text, message.citations ?? [], selectedChatId)
               : [];
           return (
             <div key={message.id} className="text-sm">
@@ -355,7 +330,7 @@ export function AssistantPane({
                 handleSubmit();
               }
             }}
-            placeholder="Ask about this chat. Use @ to include another chat..."
+            placeholder="Ask anything. Use @ to include chats..."
             className="w-full min-h-[56px] max-h-[180px] resize-none bg-transparent px-1.5 py-1 text-sm leading-relaxed outline-none placeholder:text-muted-foreground"
           />
 
@@ -394,7 +369,14 @@ export function AssistantPane({
                     onMouseDown={(evt) => evt.preventDefault()}
                     onClick={() => insertMention(candidate)}
                   >
-                    <div className="text-xs font-medium">{candidate.label}</div>
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-xs font-medium truncate">{candidate.label}</div>
+                      {candidate.isThisChat ? (
+                        <span className="shrink-0 rounded-full border border-border/80 bg-background px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                          This chat
+                        </span>
+                      ) : null}
+                    </div>
                     <div className="text-[10px] text-muted-foreground truncate">{candidate.description || "Conversation"}</div>
                   </button>
                 ))

@@ -1,8 +1,14 @@
 import * as React from "react";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
-import { fetchChats } from "@/lib/commands";
+import { assistantRunTurn, fetchChats } from "@/lib/commands";
 import type {
+  AssistantConversationContext,
+  AssistantMention,
+  AssistantProcessingEvent,
+  AssistantUiMessage,
   Chat,
+  PerChatAssistantUiState,
   PerChatSearchUiState,
   PerChatTimelineUiState,
   SearchResult,
@@ -42,6 +48,16 @@ function defaultTimelineUiState(): PerChatTimelineUiState {
   };
 }
 
+function defaultAssistantUiState(): PerChatAssistantUiState {
+  return {
+    draft: "",
+    mentions: [],
+    messages: [],
+    running: false,
+    error: null,
+  };
+}
+
 export default function App() {
   const [chats, setChats] = React.useState<Chat[]>([]);
   const [selectedChatId, setSelectedChatId] = React.useState<number | null>(
@@ -54,6 +70,9 @@ export default function App() {
   const [timelineUiByChat, setTimelineUiByChat] = React.useState<
     Record<number, PerChatTimelineUiState>
   >({});
+  const [assistantUi, setAssistantUi] = React.useState<PerChatAssistantUiState>(
+    defaultAssistantUiState(),
+  );
   const [searchMatchesByChat, setSearchMatchesByChat] = React.useState<
     Record<number, number[]>
   >({});
@@ -129,6 +148,167 @@ export default function App() {
     [selectedChatId],
   );
 
+  const updateAssistantUi = React.useCallback(
+    (next: Partial<PerChatAssistantUiState>) => {
+      setAssistantUi((prev) => ({
+        ...prev,
+        ...next,
+      }));
+    },
+    [],
+  );
+
+  const appendAssistantMessage = React.useCallback(
+    (message: AssistantUiMessage) => {
+      setAssistantUi((prev) => ({
+        ...prev,
+        messages: [...prev.messages, message],
+      }));
+    },
+    [],
+  );
+
+  const updateAssistantMessage = React.useCallback(
+    (
+      messageId: string,
+      patch:
+        | Partial<AssistantUiMessage>
+        | ((current: AssistantUiMessage | undefined) => Partial<AssistantUiMessage>),
+    ) => {
+      setAssistantUi((prev) => ({
+        ...prev,
+        messages: prev.messages.map((message) => {
+          if (message.id !== messageId) {
+            return message;
+          }
+          const resolvedPatch =
+            typeof patch === "function" ? patch(message) : patch;
+          return { ...message, ...resolvedPatch };
+        }),
+      }));
+    },
+    [],
+  );
+
+  const handleAssistantSubmit = React.useCallback(async () => {
+    const current = assistantUi;
+    const trimmed = current.draft.trim();
+    if (!trimmed || current.running) {
+      return;
+    }
+
+    const nowIso = new Date().toISOString();
+    const userMsg: AssistantUiMessage = {
+      id: `user-${nowIso}-${Math.random().toString(36).slice(2, 9)}`,
+      role: "user",
+      text: trimmed,
+      created_at: nowIso,
+    };
+    appendAssistantMessage(userMsg);
+    const pendingAssistantId = `assistant-pending-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+    const streamId = `stream-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+    appendAssistantMessage({
+      id: pendingAssistantId,
+      role: "assistant",
+      text: "",
+      created_at: new Date().toISOString(),
+      status: "streaming",
+      processing_events: [],
+      processing_duration_ms: 0,
+    });
+    updateAssistantUi({
+      draft: "",
+      mentions: [],
+      running: true,
+      error: null,
+    });
+
+    const validMentionIds = current.mentions
+      .filter((mention: AssistantMention) => trimmed.includes(`@${mention.label}`))
+      .map((mention: AssistantMention) => mention.chatId);
+    const dedupedMentionIds = Array.from(new Set(validMentionIds));
+    const mentionedChatContexts = dedupedMentionIds
+      .map((chatId) =>
+        buildAssistantConversationContext(
+          chats.find((chat) => chat.id === chatId) ?? null,
+        ),
+      )
+      .filter((ctx): ctx is AssistantConversationContext => ctx !== null);
+    const convo = [...current.messages, userMsg].map((msg) => ({
+      role: msg.role,
+      text: msg.text,
+    }));
+
+    let unlisten: UnlistenFn | null = null;
+    try {
+      unlisten = await listen<AssistantProcessingEvent>(
+        `assistant-stream:${streamId}`,
+        (event) => {
+          const payload = event.payload;
+          if (!payload) return;
+          updateAssistantMessage(pendingAssistantId, (previous) => {
+            const nextEvents = [...(previous?.processing_events ?? []), payload];
+            let nextText = previous?.text ?? "";
+            if (payload.kind === "text-delta" && payload.text) {
+              nextText += payload.text;
+            }
+            if (payload.kind === "run-error" && payload.text) {
+              nextText = `Error: ${payload.text}`;
+            }
+            return {
+              text: nextText,
+              processing_events: nextEvents,
+              processing_duration_ms:
+                payload.duration_ms ??
+                previous?.processing_duration_ms ??
+                payload.at_ms,
+            };
+          });
+        },
+      );
+
+      const response = await assistantRunTurn({
+        selected_chat_id: null,
+        mentioned_chat_ids: dedupedMentionIds,
+        mentioned_chat_contexts: mentionedChatContexts,
+        user_message: trimmed,
+        stream_id: streamId,
+        conversation: convo,
+      });
+      updateAssistantMessage(pendingAssistantId, {
+        text: response.text,
+        status: "done",
+        processing_duration_ms: response.duration_ms,
+        citations: response.citations,
+        tool_traces: response.tool_traces,
+      });
+      updateAssistantUi({
+        running: false,
+        error: null,
+      });
+    } catch (err) {
+      const reason = formatUnknownError(err);
+      updateAssistantMessage(pendingAssistantId, {
+        text: `Failed to generate response: ${reason}`,
+        status: "error",
+      });
+      updateAssistantUi({
+        running: false,
+        error: reason,
+      });
+    } finally {
+      if (unlisten) {
+        unlisten();
+      }
+    }
+  }, [
+    appendAssistantMessage,
+    assistantUi,
+    chats,
+    updateAssistantMessage,
+    updateAssistantUi,
+  ]);
+
   const handleSearchResultsChange = React.useCallback(
     (results: SearchResult[]) => {
       if (!selectedChatId) return;
@@ -138,6 +318,18 @@ export default function App() {
       }));
     },
     [selectedChatId],
+  );
+
+  const handleAssistantCitationJump = React.useCallback(
+    (chatId: number | null, rowid: number) => {
+      if (chatId != null && chatId !== selectedChatId) {
+        setSelectedChatId(chatId);
+        window.setTimeout(() => requestJump(rowid), 40);
+        return;
+      }
+      requestJump(rowid);
+    },
+    [requestJump, selectedChatId],
   );
 
   if (error) {
@@ -206,9 +398,62 @@ export default function App() {
       requestedJumpRowid={requestedJumpRowid}
       onJumpHandled={acknowledgeJump}
       onJumpToRowid={requestJump}
+      onJumpToCitation={handleAssistantCitationJump}
       onHighlightChange={setActiveHighlightRowid}
+      assistantDraft={assistantUi.draft}
+      assistantMentions={assistantUi.mentions}
+      assistantMessages={assistantUi.messages}
+      assistantRunning={assistantUi.running}
+      assistantError={assistantUi.error}
+      onAssistantDraftChange={(value) =>
+        updateAssistantUi({
+          draft: value,
+          mentions: assistantUi.mentions.filter((m) => value.includes(`@${m.label}`)),
+          error: null,
+        })
+      }
+      onAssistantMentionsChange={(mentions) => updateAssistantUi({ mentions })}
+      onAssistantSubmit={handleAssistantSubmit}
       initialTimelineUiState={selectedTimelineUi}
       onTimelineUiStateChange={updateSelectedTimelineUi}
     />
   );
+}
+
+function buildAssistantConversationContext(chat: Chat | null): AssistantConversationContext | null {
+  if (!chat) {
+    return null;
+  }
+  return {
+    chat_id: chat.id,
+    label: formatAssistantChatLabel(chat),
+    participants: chat.participants.filter((value) => value.trim().length > 0),
+  };
+}
+
+function formatAssistantChatLabel(chat: Chat): string {
+  if (chat.display_name && chat.display_name.trim().length > 0) {
+    return chat.display_name.trim();
+  }
+  const participants = chat.participants
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
+  if (participants.length > 0) {
+    return participants.join(", ");
+  }
+  return "Conversation";
+}
+
+function formatUnknownError(err: unknown): string {
+  if (err instanceof Error && err.message.trim()) {
+    return err.message;
+  }
+  if (typeof err === "string" && err.trim()) {
+    return err;
+  }
+  try {
+    return JSON.stringify(err);
+  } catch {
+    return "Assistant request failed";
+  }
 }

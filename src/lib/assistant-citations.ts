@@ -30,23 +30,26 @@ export function rewriteInlineRowidTokens(text: string): string {
 export function buildInlineCitations(
   text: string,
   citations: AssistantCitation[],
-  fallbackChatId: number,
+  fallbackChatId?: number | null,
 ): AssistantCitation[] {
   const byRowid = new Map<number, AssistantCitation>();
   for (const citation of citations) {
     byRowid.set(citation.rowid, citation);
   }
 
-  return extractInlineRowids(text).map((rowid) => {
+  return extractInlineRowids(text).flatMap((rowid) => {
     const existing = byRowid.get(rowid);
     if (existing) {
-      return existing;
+      return [existing];
     }
-    return {
+    if (fallbackChatId == null) {
+      return [];
+    }
+    return [{
       chat_id: fallbackChatId,
       rowid,
       label: "Referenced message",
       reason: "Referenced in response",
-    };
+    }];
   });
 }

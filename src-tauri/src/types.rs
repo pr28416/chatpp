@@ -109,3 +109,69 @@ pub struct ResolvedAttachment {
     pub mime_type: String,
     pub filename: String,
 }
+
+#[derive(Serialize, Deserialize)]
+pub struct AssistantConversationTurn {
+    pub role: String,
+    pub text: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct AssistantConversationContext {
+    pub chat_id: i32,
+    pub label: String,
+    pub participants: Vec<String>,
+}
+
+#[derive(Deserialize)]
+pub struct AssistantTurnRequest {
+    pub selected_chat_id: Option<i32>,
+    pub mentioned_chat_ids: Vec<i32>,
+    pub selected_chat_context: Option<AssistantConversationContext>,
+    pub mentioned_chat_contexts: Option<Vec<AssistantConversationContext>>,
+    pub user_message: String,
+    pub stream_id: String,
+    pub conversation: Vec<AssistantConversationTurn>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct AssistantCitation {
+    pub chat_id: i32,
+    pub rowid: i32,
+    pub label: String,
+    pub chat_label: Option<String>,
+    pub sender: Option<String>,
+    pub date: Option<String>,
+    pub message_text: Option<String>,
+    pub reason: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct AssistantToolTrace {
+    pub tool_name: String,
+    pub input: String,
+    pub output: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct AssistantTurnResponse {
+    pub text: String,
+    pub duration_ms: Option<u64>,
+    pub citations: Vec<AssistantCitation>,
+    pub tool_traces: Vec<AssistantToolTrace>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct AssistantStreamEvent {
+    pub kind: String,
+    pub at_ms: u64,
+    pub text: Option<String>,
+    pub step_index: Option<u32>,
+    pub tool_call_id: Option<String>,
+    pub tool_name: Option<String>,
+    pub input_preview: Option<String>,
+    pub output_preview: Option<String>,
+    pub success: Option<bool>,
+    pub duration_ms: Option<u64>,
+    pub finish_reason: Option<String>,
+}

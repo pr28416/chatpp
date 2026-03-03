@@ -84,7 +84,7 @@ export interface SearchResponse {
   total: number;
 }
 
-export type SidebarMode = "chats" | "search" | "timeline";
+export type SidebarMode = "chats" | "search" | "timeline" | "ai";
 
 export interface PerChatSearchUiState {
   searchQuery: string;
@@ -99,6 +99,99 @@ export interface PerChatTimelineUiState {
   selectedDetailNodeId: number | null;
   expandedSubtopicIds: Record<number, boolean>;
   selectedOccurrenceIdxByNode: Record<number, number>;
+}
+
+export interface AssistantMention {
+  chatId: number;
+  label: string;
+  start: number;
+  end: number;
+}
+
+export interface AssistantCitation {
+  chat_id: number;
+  rowid: number;
+  label: string;
+  chat_label?: string;
+  sender?: string | null;
+  date?: string | null;
+  message_text?: string | null;
+  reason?: string;
+}
+
+export interface AssistantToolTrace {
+  tool_name: string;
+  input: string;
+  output: string;
+}
+
+export interface AssistantUiMessage {
+  id: string;
+  role: "user" | "assistant";
+  text: string;
+  created_at: string;
+  status?: "streaming" | "done" | "error";
+  processing_events?: AssistantProcessingEvent[];
+  processing_duration_ms?: number;
+  citations?: AssistantCitation[];
+  tool_traces?: AssistantToolTrace[];
+}
+
+export interface AssistantProcessingEvent {
+  kind:
+    | "run-start"
+    | "step-start"
+    | "step-finish"
+    | "reasoning-delta"
+    | "tool-start"
+    | "tool-finish"
+    | "text-delta"
+    | "run-finish"
+    | "run-error";
+  at_ms: number;
+  text?: string;
+  step_index?: number;
+  tool_call_id?: string;
+  tool_name?: string;
+  input_preview?: string;
+  output_preview?: string;
+  success?: boolean;
+  duration_ms?: number;
+  finish_reason?: string;
+}
+
+export interface PerChatAssistantUiState {
+  draft: string;
+  mentions: AssistantMention[];
+  messages: AssistantUiMessage[];
+  running: boolean;
+  error: string | null;
+}
+
+export interface AssistantTurnRequest {
+  selected_chat_id?: number | null;
+  mentioned_chat_ids: number[];
+  selected_chat_context?: AssistantConversationContext;
+  mentioned_chat_contexts?: AssistantConversationContext[];
+  user_message: string;
+  stream_id: string;
+  conversation: Array<{
+    role: "user" | "assistant";
+    text: string;
+  }>;
+}
+
+export interface AssistantConversationContext {
+  chat_id: number;
+  label: string;
+  participants: string[];
+}
+
+export interface AssistantTurnResponse {
+  text: string;
+  duration_ms?: number;
+  citations: AssistantCitation[];
+  tool_traces: AssistantToolTrace[];
 }
 
 export interface WorkspaceLayoutState {
