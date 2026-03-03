@@ -1,5 +1,5 @@
 import * as React from "react";
-import { ListTree, MessageSquare, Search } from "lucide-react";
+import { Bot, ListTree, MessageSquare, Search } from "lucide-react";
 import { startWindowDrag as startWindowDragCommand } from "@/lib/commands";
 
 import type { SidebarMode } from "@/lib/types";
@@ -20,6 +20,7 @@ const MODES: ModeMeta[] = [
   { mode: "chats", label: "Chats", icon: MessageSquare },
   { mode: "search", label: "Search", icon: Search },
   { mode: "timeline", label: "Timeline", icon: ListTree },
+  { mode: "ai", label: "AI", icon: Bot },
 ];
 
 export function ActivityRail({ activeMode, onModeChange }: ActivityRailProps) {

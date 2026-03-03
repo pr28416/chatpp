@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+#[derive(Clone)]
 pub struct AppState {
     pub db_path: PathBuf,
     pub timeline_db_path: PathBuf,

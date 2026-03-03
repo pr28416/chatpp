@@ -19,14 +19,16 @@ export function AssistantStreamBlocks({
     return null;
   }
 
+  const grouped = groupBlocks(blocks);
+
   return (
     <div className="space-y-3">
-      {blocks.map((block) => {
-        if (block.kind === "text") {
+      {grouped.map((group) => {
+        if (group.kind === "text") {
           return (
             <AssistantMarkdown
-              key={block.id}
-              text={block.text ?? ""}
+              key={group.block.id}
+              text={group.block.text ?? ""}
               citationByRowid={citationByRowid}
               onJumpToCitation={onJumpToCitation}
             />
@@ -35,29 +37,74 @@ export function AssistantStreamBlocks({
 
         return (
           <div
-            key={block.id}
+            key={group.id}
             className={cn(
-              "flex items-start gap-2 rounded-lg border border-border/70 bg-card/55 px-3 py-2 text-xs",
-              block.kind === "error" && "border-destructive/40 bg-destructive/10 text-destructive",
+              "rounded-lg border border-border/70 bg-card/55 px-3 py-2 text-xs",
+              group.hasError && "border-destructive/40 bg-destructive/10 text-destructive",
             )}
           >
-            <span className="mt-0.5 text-muted-foreground">
-              {block.kind === "reasoning" ? (
-                <Brain className="h-3 w-3" />
-              ) : block.kind === "error" ? (
-                <Sparkles className="h-3 w-3" />
-              ) : (
-                <Wrench className="h-3 w-3" />
-              )}
-            </span>
-            <span className={cn("min-w-0 text-muted-foreground", block.kind === "error" && "text-destructive")}>
-              {formatBlockLabel(block)}
-            </span>
+            <div className="space-y-1.5">
+              {group.blocks.map((block) => (
+                <div key={block.id} className="flex items-start gap-2">
+                  <span className="mt-0.5 text-muted-foreground">
+                    {block.kind === "reasoning" ? (
+                      <Brain className="h-3 w-3" />
+                    ) : block.kind === "error" ? (
+                      <Sparkles className="h-3 w-3" />
+                    ) : (
+                      <Wrench className="h-3 w-3" />
+                    )}
+                  </span>
+                  <span
+                    className={cn(
+                      "min-w-0 text-muted-foreground",
+                      block.kind === "error" && "text-destructive",
+                    )}
+                  >
+                    {formatBlockLabel(block)}
+                  </span>
+                </div>
+              ))}
+            </div>
           </div>
         );
       })}
     </div>
   );
+}
+
+type BlockGroup =
+  | { kind: "text"; block: AssistantDisplayBlock }
+  | { kind: "trace"; id: string; blocks: AssistantDisplayBlock[]; hasError: boolean };
+
+function groupBlocks(blocks: AssistantDisplayBlock[]): BlockGroup[] {
+  const groups: BlockGroup[] = [];
+  let activeTrace: AssistantDisplayBlock[] = [];
+
+  const flushTrace = () => {
+    if (activeTrace.length === 0) {
+      return;
+    }
+    groups.push({
+      kind: "trace",
+      id: activeTrace[0].id,
+      blocks: activeTrace,
+      hasError: activeTrace.some((block) => block.kind === "error"),
+    });
+    activeTrace = [];
+  };
+
+  for (const block of blocks) {
+    if (block.kind === "text") {
+      flushTrace();
+      groups.push({ kind: "text", block });
+      continue;
+    }
+    activeTrace.push(block);
+  }
+
+  flushTrace();
+  return groups;
 }
 
 function formatBlockLabel(block: AssistantDisplayBlock): string {
