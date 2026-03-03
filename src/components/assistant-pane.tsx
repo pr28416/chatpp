@@ -1,10 +1,27 @@
 import * as React from "react";
-import { AtSign, ChevronDown, Loader2, MessageSquare, Send, X } from "lucide-react";
+import {
+  AtSign,
+  Check,
+  ChevronDown,
+  Loader2,
+  MessageSquare,
+  Send,
+  X,
+} from "lucide-react";
 
 import { AssistantMarkdown } from "@/components/assistant-markdown";
 import { AssistantStreamBlocks } from "@/components/assistant-stream-blocks";
 import { Button } from "@/components/ui/button";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import {
+  ASSISTANT_MODEL_OPTIONS,
+  getAssistantModelOption,
+  getMissingProviderKeyMessage,
+} from "@/lib/assistant-models";
 import { buildInlineCitations } from "@/lib/assistant-citations";
 import { buildDisplayBlocksFromEvents } from "@/lib/assistant-stream-blocks";
 import { cn } from "@/lib/utils";
@@ -19,11 +36,14 @@ interface AssistantPaneProps {
   chats: Chat[];
   selectedChatId: number | null;
   draft: string;
+  selectedModelId: string;
   mentions: AssistantMention[];
   messages: AssistantUiMessage[];
   running: boolean;
   error: string | null;
+  providerAvailability: Record<string, boolean>;
   onDraftChange: (value: string) => void;
+  onModelChange: (value: string) => void;
   onMentionsChange: (mentions: AssistantMention[]) => void;
   onSubmit: () => void;
   onJumpToCitation: (chatId: number | null, rowid: number) => void;
@@ -42,11 +62,14 @@ export function AssistantPane({
   chats,
   selectedChatId,
   draft,
+  selectedModelId,
   mentions,
   messages,
   running,
   error,
+  providerAvailability,
   onDraftChange,
+  onModelChange,
   onMentionsChange,
   onSubmit,
   onJumpToCitation,
@@ -54,12 +77,35 @@ export function AssistantPane({
   const [showMentionMenu, setShowMentionMenu] = React.useState(false);
   const [mentionQuery, setMentionQuery] = React.useState("");
   const [selectedMentionIdx, setSelectedMentionIdx] = React.useState(0);
-  const [mentionRange, setMentionRange] = React.useState<{ start: number; end: number } | null>(null);
+  const [mentionRange, setMentionRange] = React.useState<{
+    start: number;
+    end: number;
+  } | null>(null);
   const [composerHeight, setComposerHeight] = React.useState(140);
 
   const scrollRef = React.useRef<HTMLDivElement | null>(null);
   const textareaRef = React.useRef<HTMLTextAreaElement | null>(null);
   const composerRef = React.useRef<HTMLDivElement | null>(null);
+  const mentionOptionRefs = React.useRef<Array<HTMLButtonElement | null>>([]);
+  const selectedModelOption =
+    getAssistantModelOption(selectedModelId) ??
+    getAssistantModelOption(ASSISTANT_MODEL_OPTIONS[0]?.id ?? "");
+  const groupedModels = React.useMemo(() => {
+    const groups = new Map<string, typeof ASSISTANT_MODEL_OPTIONS>();
+    for (const model of ASSISTANT_MODEL_OPTIONS) {
+      const existing = groups.get(model.providerLabel) ?? [];
+      groups.set(model.providerLabel, [...existing, model]);
+    }
+    return Array.from(groups.entries());
+  }, []);
+  const isProviderReady =
+    selectedModelOption == null
+      ? false
+      : providerAvailability[selectedModelOption.provider] ?? false;
+  const missingProviderKeyMessage =
+    selectedModelOption && !isProviderReady
+      ? getMissingProviderKeyMessage(selectedModelOption)
+      : null;
 
   const mentionCandidates = React.useMemo(() => {
     const q = mentionQuery.trim().toLowerCase();
@@ -85,7 +131,11 @@ export function AssistantPane({
           index,
         };
       })
-      .filter((item) => (q ? item.index.includes(q) || item.label.toLowerCase().includes(q) : true))
+      .filter((item) =>
+        q
+          ? item.index.includes(q) || item.label.toLowerCase().includes(q)
+          : true,
+      )
       .slice(0, 12)
       .map(({ chatId, label, description, isThisChat }) => ({
         chatId,
@@ -126,27 +176,41 @@ export function AssistantPane({
     textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, MAX_TEXTAREA_HEIGHT)}px`;
   }, [draft]);
 
-  const applyMentionDetection = React.useCallback((text: string, caret: number) => {
-    const left = text.slice(0, caret);
-    const at = left.lastIndexOf("@");
-    if (at < 0) {
-      setShowMentionMenu(false);
-      setMentionQuery("");
-      setMentionRange(null);
+  React.useEffect(() => {
+    mentionOptionRefs.current = mentionOptionRefs.current.slice(0, mentionCandidates.length);
+  }, [mentionCandidates.length]);
+
+  React.useEffect(() => {
+    if (!showMentionMenu || mentionCandidates.length === 0) {
       return;
     }
-    const token = left.slice(at + 1);
-    if (token.includes(" ") || token.includes("\n") || token.includes("\t")) {
-      setShowMentionMenu(false);
-      setMentionQuery("");
-      setMentionRange(null);
-      return;
-    }
-    setShowMentionMenu(true);
-    setMentionQuery(token);
-    setMentionRange({ start: at, end: caret });
-    setSelectedMentionIdx(0);
-  }, []);
+    mentionOptionRefs.current[selectedMentionIdx]?.scrollIntoView({ block: "nearest" });
+  }, [mentionCandidates.length, selectedMentionIdx, showMentionMenu]);
+
+  const applyMentionDetection = React.useCallback(
+    (text: string, caret: number) => {
+      const left = text.slice(0, caret);
+      const at = left.lastIndexOf("@");
+      if (at < 0) {
+        setShowMentionMenu(false);
+        setMentionQuery("");
+        setMentionRange(null);
+        return;
+      }
+      const token = left.slice(at + 1);
+      if (token.includes(" ") || token.includes("\n") || token.includes("\t")) {
+        setShowMentionMenu(false);
+        setMentionQuery("");
+        setMentionRange(null);
+        return;
+      }
+      setShowMentionMenu(true);
+      setMentionQuery(token);
+      setMentionRange({ start: at, end: caret });
+      setSelectedMentionIdx(0);
+    },
+    [],
+  );
 
   const handleDraftChange = React.useCallback(
     (evt: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -217,14 +281,14 @@ export function AssistantPane({
   );
 
   const handleSubmit = React.useCallback(() => {
-    if (running || !draft.trim()) {
+    if (running || !draft.trim() || !!missingProviderKeyMessage) {
       return;
     }
     onSubmit();
     setShowMentionMenu(false);
     setMentionQuery("");
     setMentionRange(null);
-  }, [draft, onSubmit, running]);
+  }, [draft, missingProviderKeyMessage, onSubmit, running]);
 
   return (
     <div className="h-full min-h-0 flex flex-col bg-transparent relative">
@@ -250,7 +314,11 @@ export function AssistantPane({
               : [];
           const inlineCitations =
             message.role === "assistant"
-              ? buildInlineCitations(message.text, message.citations ?? [], selectedChatId)
+              ? buildInlineCitations(
+                  message.text,
+                  message.citations ?? [],
+                  selectedChatId,
+                )
               : [];
           return (
             <div key={message.id} className="text-sm">
@@ -285,7 +353,9 @@ export function AssistantPane({
                   )}
                 </div>
               ) : (
-                <div className="whitespace-pre-wrap break-words leading-relaxed">{message.text}</div>
+                <div className="whitespace-pre-wrap break-words leading-relaxed">
+                  {message.text}
+                </div>
               )}
 
               {inlineCitations.length > 0 ? (
@@ -309,6 +379,11 @@ export function AssistantPane({
             {error}
           </div>
         ) : null}
+        {missingProviderKeyMessage ? (
+          <div className="mb-2 rounded-md border border-amber-400/40 bg-amber-500/10 px-2 py-1.5 text-xs text-amber-700 dark:text-amber-300">
+            {missingProviderKeyMessage}
+          </div>
+        ) : null}
 
         <div className="relative rounded-xl bg-transparent">
           <textarea
@@ -319,7 +394,9 @@ export function AssistantPane({
               if (showMentionMenu && mentionCandidates.length > 0) {
                 if (evt.key === "ArrowDown") {
                   evt.preventDefault();
-                  setSelectedMentionIdx((prev) => (prev + 1) % mentionCandidates.length);
+                  setSelectedMentionIdx(
+                    (prev) => (prev + 1) % mentionCandidates.length,
+                  );
                   return;
                 }
                 if (evt.key === "ArrowUp") {
@@ -352,31 +429,87 @@ export function AssistantPane({
           />
 
           <div className="mt-1 flex items-center justify-between gap-2">
-            <div className="flex items-center gap-1 text-[11px] text-muted-foreground">
-              <AtSign className="h-3 w-3" />
-              Mention chats for broader context
+            <div className="flex min-w-0 items-center gap-2 pl-1">
+              <Popover>
+                <PopoverTrigger asChild>
+                  <button
+                    type="button"
+                    className="inline-flex max-w-[220px] items-center gap-1 rounded-md border border-border bg-background px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground"
+                  >
+                    <span className="truncate">
+                      {selectedModelOption
+                        ? selectedModelOption.label
+                        : "Select model"}
+                    </span>
+                    <ChevronDown className="h-3 w-3 shrink-0" />
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent align="start" className="w-[300px] p-1">
+                  <div className="max-h-72 overflow-y-auto pr-1">
+                    {groupedModels.map(([providerLabel, models]) => (
+                      <div key={providerLabel} className="mb-2 last:mb-0">
+                        <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                          {providerLabel}
+                        </div>
+                        <div className="space-y-0.5">
+                          {models.map((model) => (
+                            <button
+                              key={model.id}
+                              type="button"
+                              onClick={() => onModelChange(model.id)}
+                              className={cn(
+                                "flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-xs transition-colors",
+                                selectedModelOption?.id === model.id
+                                  ? "bg-accent text-accent-foreground"
+                                  : "hover:bg-accent/70",
+                              )}
+                            >
+                              <span className="truncate">{model.label}</span>
+                              {selectedModelOption?.id === model.id ? (
+                                <Check className="h-3 w-3 shrink-0" />
+                              ) : null}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </PopoverContent>
+              </Popover>
+              <div className="flex items-center gap-1 text-[11px] text-muted-foreground">
+                <AtSign className="h-3 w-3" />
+                Mention
+              </div>
             </div>
             <Button
               type="button"
-              size="sm"
+              size="icon-sm"
               onClick={handleSubmit}
-              disabled={running || !draft.trim()}
+              disabled={running || !draft.trim() || !!missingProviderKeyMessage}
               className="rounded-lg"
             >
-              {running ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
-              Send
+              {running ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Send className="h-3.5 w-3.5" />
+              )}
             </Button>
           </div>
 
           {showMentionMenu ? (
             <div className="absolute bottom-[calc(100%+8px)] left-2 right-2 z-30 max-h-64 overflow-y-auto rounded-lg border border-border bg-popover p-1 shadow-lg">
               {mentionCandidates.length === 0 ? (
-                <div className="px-2 py-2 text-xs text-muted-foreground">No matching chats</div>
+                <div className="px-2 py-2 text-xs text-muted-foreground">
+                  No matching chats
+                </div>
               ) : (
                 mentionCandidates.map((candidate, idx) => (
                   <button
                     key={candidate.chatId}
                     type="button"
+                    ref={(node) => {
+                      mentionOptionRefs.current[idx] = node;
+                    }}
                     className={cn(
                       "w-full rounded-md px-2 py-1.5 text-left transition-colors",
                       idx === selectedMentionIdx
@@ -387,14 +520,18 @@ export function AssistantPane({
                     onClick={() => insertMention(candidate)}
                   >
                     <div className="flex items-center justify-between gap-2">
-                      <div className="text-xs font-medium truncate">{candidate.label}</div>
+                      <div className="text-xs font-medium truncate">
+                        {candidate.label}
+                      </div>
                       {candidate.isThisChat ? (
                         <span className="shrink-0 rounded-full border border-border/80 bg-background px-1.5 py-0.5 text-[10px] text-muted-foreground">
                           This chat
                         </span>
                       ) : null}
                     </div>
-                    <div className="text-[10px] text-muted-foreground truncate">{candidate.description || "Conversation"}</div>
+                    <div className="text-[10px] text-muted-foreground truncate">
+                      {candidate.description || "Conversation"}
+                    </div>
                   </button>
                 ))
               )}
@@ -410,9 +547,17 @@ export function AssistantPane({
                 key={`${mention.chatId}-${mention.start}-${mention.end}`}
                 onClick={() => {
                   const target = `@${mention.label}`;
-                  const nextDraft = draft.replace(target, "").replace(/\s{2,}/g, " ").trimStart();
+                  const nextDraft = draft
+                    .replace(target, "")
+                    .replace(/\s{2,}/g, " ")
+                    .trimStart();
                   onDraftChange(nextDraft);
-                  onMentionsChange(filterValidMentions(mentions.filter((m) => m !== mention), nextDraft));
+                  onMentionsChange(
+                    filterValidMentions(
+                      mentions.filter((m) => m !== mention),
+                      nextDraft,
+                    ),
+                  );
                 }}
                 className="inline-flex items-center gap-1 rounded-full border border-border bg-background px-2 py-0.5 text-[11px] text-muted-foreground hover:text-foreground"
               >
@@ -450,12 +595,17 @@ function CitationGroups({
     <div className="mt-2 space-y-2">
       {byChat.map(([chatId, rows]) => {
         const chat = chats.find((item) => item.id === chatId);
-        const chatLabel =
-          truncate(rows[0]?.chat_label ?? (chat ? formatChatName(chat) : "Conversation"), 42);
+        const chatLabel = truncate(
+          rows[0]?.chat_label ?? (chat ? formatChatName(chat) : "Conversation"),
+          42,
+        );
         const visibleRows = rows.slice(0, 3);
         const remainingRows = rows.slice(3);
         return (
-          <div key={chatId} className="rounded-md border border-border/70 bg-background/70 p-2">
+          <div
+            key={chatId}
+            className="rounded-md border border-border/70 bg-background/70 p-2"
+          >
             <div className="mb-1 flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
               <MessageSquare className="h-3 w-3 shrink-0" />
               <span className="truncate">{chatLabel}</span>
@@ -475,7 +625,12 @@ function CitationGroups({
                     {citation.date ? ` · ${formatLongDate(citation.date)}` : ""}
                   </div>
                   <div className="text-xs text-foreground/90">
-                    {truncate(citation.message_text ?? citation.reason ?? "Referenced message", 130)}
+                    {truncate(
+                      citation.message_text ??
+                        citation.reason ??
+                        "Referenced message",
+                      130,
+                    )}
                   </div>
                 </button>
               ))}
@@ -500,15 +655,27 @@ function CitationGroups({
                           <button
                             key={`${chatId}-${citation.rowid}`}
                             type="button"
-                            onClick={() => onJumpToCitation(citation.chat_id ?? null, citation.rowid)}
+                            onClick={() =>
+                              onJumpToCitation(
+                                citation.chat_id ?? null,
+                                citation.rowid,
+                              )
+                            }
                             className="w-full min-w-0 rounded px-2 py-1.5 text-left hover:bg-accent/60 transition-colors"
                           >
                             <div className="min-w-0 break-words text-[11px] text-muted-foreground">
                               {formatSpeaker(citation)}
-                              {citation.date ? ` · ${formatLongDate(citation.date)}` : ""}
+                              {citation.date
+                                ? ` · ${formatLongDate(citation.date)}`
+                                : ""}
                             </div>
                             <div className="min-w-0 break-words whitespace-normal text-xs text-foreground/90">
-                              {truncate(citation.message_text ?? citation.reason ?? "Referenced message", 150)}
+                              {truncate(
+                                citation.message_text ??
+                                  citation.reason ??
+                                  "Referenced message",
+                                150,
+                              )}
                             </div>
                           </button>
                         ))}
@@ -525,8 +692,13 @@ function CitationGroups({
   );
 }
 
-function filterValidMentions(mentions: AssistantMention[], text: string): AssistantMention[] {
-  return mentions.filter((mention) => text.slice(mention.start, mention.end) === `@${mention.label}`);
+function filterValidMentions(
+  mentions: AssistantMention[],
+  text: string,
+): AssistantMention[] {
+  return mentions.filter(
+    (mention) => text.slice(mention.start, mention.end) === `@${mention.label}`,
+  );
 }
 
 function formatChatName(chat: Chat): string {

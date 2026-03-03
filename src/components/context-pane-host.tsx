@@ -31,11 +31,14 @@ interface ContextPaneHostProps {
   onSearchResultsChange: (results: SearchResult[]) => void;
   onActiveResultChange: (rowid: number | null) => void;
   assistantDraft: string;
+  assistantSelectedModelId: string;
   assistantMentions: AssistantMention[];
   assistantMessages: AssistantUiMessage[];
   assistantRunning: boolean;
   assistantError: string | null;
+  assistantProviderAvailability: Record<string, boolean>;
   onAssistantDraftChange: (value: string) => void;
+  onAssistantModelChange: (value: string) => void;
   onAssistantMentionsChange: (mentions: AssistantMention[]) => void;
   onAssistantSubmit: () => void;
   initialTimelineUiState?: PerChatTimelineUiState;
@@ -59,11 +62,14 @@ export function ContextPaneHost({
   onSearchResultsChange,
   onActiveResultChange,
   assistantDraft,
+  assistantSelectedModelId,
   assistantMentions,
   assistantMessages,
   assistantRunning,
   assistantError,
+  assistantProviderAvailability,
   onAssistantDraftChange,
+  onAssistantModelChange,
   onAssistantMentionsChange,
   onAssistantSubmit,
   initialTimelineUiState,
@@ -102,11 +108,14 @@ export function ContextPaneHost({
         chats={chats}
         selectedChatId={selectedChatId}
         draft={assistantDraft}
+        selectedModelId={assistantSelectedModelId}
         mentions={assistantMentions}
         messages={assistantMessages}
         running={assistantRunning}
         error={assistantError}
+        providerAvailability={assistantProviderAvailability}
         onDraftChange={onAssistantDraftChange}
+        onModelChange={onAssistantModelChange}
         onMentionsChange={onAssistantMentionsChange}
         onSubmit={onAssistantSubmit}
         onJumpToCitation={onJumpToCitation}

@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 
+use crate::assistant_bridge;
 use crate::db;
 use crate::state::AppState;
 use crate::timeline_db;
@@ -691,6 +692,51 @@ pub fn get_timeline_node_message_rowids_by_node(
     }
 
     Ok(deduped.into_iter().take(effective_limit).collect())
+}
+
+#[tauri::command]
+pub async fn assistant_run_turn(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    request: AssistantTurnRequest,
+) -> Result<AssistantTurnResponse, String> {
+    let state_clone = state.inner().clone();
+    let app_handle_clone = app_handle.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        assistant_bridge::run_assistant_turn(&state_clone, &request, &app_handle_clone)
+    })
+    .await
+    .map_err(|e| format!("Assistant task join error: {}", e))?
+}
+
+#[tauri::command]
+pub fn get_assistant_provider_availability() -> HashMap<String, bool> {
+    let mut out = HashMap::new();
+    out.insert(
+        "openai".to_string(),
+        std::env::var("OPENAI_API_KEY")
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false),
+    );
+    out.insert(
+        "anthropic".to_string(),
+        std::env::var("ANTHROPIC_API_KEY")
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false),
+    );
+    out.insert(
+        "google".to_string(),
+        std::env::var("GOOGLE_GENERATIVE_AI_API_KEY")
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false),
+    );
+    out.insert(
+        "xai".to_string(),
+        std::env::var("XAI_API_KEY")
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false),
+    );
+    out
 }
 
 fn query_source_max_rowid(db_path: &std::path::Path, chat_id: i32) -> Result<i32, String> {

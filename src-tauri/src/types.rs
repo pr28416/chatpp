@@ -129,6 +129,8 @@ pub struct AssistantTurnRequest {
     pub mentioned_chat_ids: Vec<i32>,
     pub selected_chat_context: Option<AssistantConversationContext>,
     pub mentioned_chat_contexts: Option<Vec<AssistantConversationContext>>,
+    pub model_provider: String,
+    pub model_id: String,
     pub user_message: String,
     pub stream_id: String,
     pub conversation: Vec<AssistantConversationTurn>,

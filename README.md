@@ -31,12 +31,17 @@ This repo is a **Tauri v2 + React + TypeScript** app with a Rust backend that re
 
 ```bash
 npm install
+npm install --prefix assistant-agent
 ```
 
 Optional: create a `.env` in repo root (or `src-tauri/.env`) for AI timeline indexing:
 
 ```bash
 OPENAI_API_KEY=your_key_here
+# Optional assistant provider keys:
+# ANTHROPIC_API_KEY=your_key_here
+# GOOGLE_GENERATIVE_AI_API_KEY=your_key_here
+# XAI_API_KEY=your_key_here
 # Optional model overrides:
 # OPENAI_MODEL=gpt-5-nano
 # OPENAI_MODEL_TIMELINE_TEXT=gpt-5-nano
@@ -86,11 +91,21 @@ The app loads `.env` from either:
 ### Core
 
 - `OPENAI_API_KEY`: enables AI timeline generation and image captioning
+- `ANTHROPIC_API_KEY`: enables Anthropic models for assistant chat
+- `GOOGLE_GENERATIVE_AI_API_KEY`: enables Gemini models for assistant chat
+- `XAI_API_KEY`: enables xAI Grok models for assistant chat
 - `OPENAI_MODEL`: default model fallback for timeline calls (default: `gpt-5-nano`)
 - `OPENAI_MODEL_TIMELINE_TEXT`: override model for timeline text generation
 - `OPENAI_MODEL_TIMELINE_MEDIA`: override model for image captioning
 - `TIMELINE_DB_PATH`: override location of the timeline SQLite DB (default: `~/Library/Application Support/imessage-search-desktop/timeline.db`)
 - `TIMELINE_AI_MOCK`: `1`/`true` to bypass live OpenAI calls and return mock AI output
+
+### Assistant model selector
+
+- The AI sidebar includes a session-only model selector for assistant chat.
+- Supported providers: OpenAI, Anthropic, Google Gemini, xAI.
+- The selected model applies to assistant turns only and resets on app restart.
+- Timeline indexing continues to use `OPENAI_MODEL*` environment settings.
 
 ### Timeline tuning
 

@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  AssistantProviderAvailability,
   AssistantTurnRequest,
   AssistantTurnResponse,
   Chat,
@@ -177,4 +178,8 @@ export async function assistantRunTurn(
   request: AssistantTurnRequest,
 ): Promise<AssistantTurnResponse> {
   return invoke("assistant_run_turn", { request });
+}
+
+export async function getAssistantProviderAvailability(): Promise<AssistantProviderAvailability> {
+  return invoke("get_assistant_provider_availability");
 }

@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod assistant_bridge;
+mod assistant_tools;
 mod commands;
 mod db;
 mod state;
@@ -44,6 +46,8 @@ fn main() {
             commands::jump_anchor_context,
             commands::get_timeline_node_message_rowids,
             commands::get_timeline_node_message_rowids_by_node,
+            commands::assistant_run_turn,
+            commands::get_assistant_provider_availability,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

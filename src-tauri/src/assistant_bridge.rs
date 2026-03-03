@@ -53,6 +53,8 @@ pub fn run_assistant_turn(
             "mentioned_chat_ids": request.mentioned_chat_ids,
             "selected_chat_context": &request.selected_chat_context,
             "mentioned_chat_contexts": &request.mentioned_chat_contexts,
+            "model_provider": request.model_provider,
+            "model_id": request.model_id,
             "user_message": request.user_message,
             "stream_id": request.stream_id,
             "conversation": request.conversation,

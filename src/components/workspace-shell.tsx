@@ -37,11 +37,14 @@ interface WorkspaceShellProps {
   onJumpToCitation: (chatId: number | null, rowid: number) => void;
   onHighlightChange: (rowid: number | null) => void;
   assistantDraft: string;
+  assistantSelectedModelId: string;
   assistantMentions: AssistantMention[];
   assistantMessages: AssistantUiMessage[];
   assistantRunning: boolean;
   assistantError: string | null;
+  assistantProviderAvailability: Record<string, boolean>;
   onAssistantDraftChange: (value: string) => void;
+  onAssistantModelChange: (value: string) => void;
   onAssistantMentionsChange: (mentions: AssistantMention[]) => void;
   onAssistantSubmit: () => void;
   initialTimelineUiState?: PerChatTimelineUiState;
@@ -81,11 +84,14 @@ export function WorkspaceShell({
   onJumpToCitation,
   onHighlightChange,
   assistantDraft,
+  assistantSelectedModelId,
   assistantMentions,
   assistantMessages,
   assistantRunning,
   assistantError,
+  assistantProviderAvailability,
   onAssistantDraftChange,
+  onAssistantModelChange,
   onAssistantMentionsChange,
   onAssistantSubmit,
   initialTimelineUiState,
@@ -209,11 +215,14 @@ export function WorkspaceShell({
               onSearchResultsChange={onSearchResultsChange}
               onActiveResultChange={onActiveResultChange}
               assistantDraft={assistantDraft}
+              assistantSelectedModelId={assistantSelectedModelId}
               assistantMentions={assistantMentions}
               assistantMessages={assistantMessages}
               assistantRunning={assistantRunning}
               assistantError={assistantError}
+              assistantProviderAvailability={assistantProviderAvailability}
               onAssistantDraftChange={onAssistantDraftChange}
+              onAssistantModelChange={onAssistantModelChange}
               onAssistantMentionsChange={onAssistantMentionsChange}
               onAssistantSubmit={onAssistantSubmit}
               initialTimelineUiState={initialTimelineUiState}
