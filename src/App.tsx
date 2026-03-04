@@ -482,6 +482,17 @@ export default function App() {
     [requestJump, selectedChatId],
   );
 
+  const handleAssistantNewChat = React.useCallback(() => {
+    setAssistantUi((prev) => ({
+      ...prev,
+      draft: "",
+      mentions: [],
+      messages: [],
+      running: false,
+      error: null,
+    }));
+  }, []);
+
   if (error) {
     return (
       <div className="h-screen flex items-center justify-center p-8">
@@ -571,6 +582,7 @@ export default function App() {
       }
       onAssistantMentionsChange={(mentions) => updateAssistantUi({ mentions })}
       onAssistantSubmit={handleAssistantSubmit}
+      onAssistantNewChat={handleAssistantNewChat}
       initialTimelineUiState={selectedTimelineUi}
       onTimelineUiStateChange={updateSelectedTimelineUi}
     />

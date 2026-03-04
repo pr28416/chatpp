@@ -47,6 +47,7 @@ interface WorkspaceShellProps {
   onAssistantModelChange: (value: string) => void;
   onAssistantMentionsChange: (mentions: AssistantMention[]) => void;
   onAssistantSubmit: () => void;
+  onAssistantNewChat: () => void;
   initialTimelineUiState?: PerChatTimelineUiState;
   onTimelineUiStateChange: (state: PerChatTimelineUiState) => void;
 }
@@ -94,6 +95,7 @@ export function WorkspaceShell({
   onAssistantModelChange,
   onAssistantMentionsChange,
   onAssistantSubmit,
+  onAssistantNewChat,
   initialTimelineUiState,
   onTimelineUiStateChange,
 }: WorkspaceShellProps) {
@@ -225,6 +227,7 @@ export function WorkspaceShell({
               onAssistantModelChange={onAssistantModelChange}
               onAssistantMentionsChange={onAssistantMentionsChange}
               onAssistantSubmit={onAssistantSubmit}
+              onAssistantNewChat={onAssistantNewChat}
               initialTimelineUiState={initialTimelineUiState}
               onTimelineUiStateChange={onTimelineUiStateChange}
             />

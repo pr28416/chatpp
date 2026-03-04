@@ -41,6 +41,7 @@ interface ContextPaneHostProps {
   onAssistantModelChange: (value: string) => void;
   onAssistantMentionsChange: (mentions: AssistantMention[]) => void;
   onAssistantSubmit: () => void;
+  onAssistantNewChat: () => void;
   initialTimelineUiState?: PerChatTimelineUiState;
   onTimelineUiStateChange: (state: PerChatTimelineUiState) => void;
 }
@@ -72,6 +73,7 @@ export function ContextPaneHost({
   onAssistantModelChange,
   onAssistantMentionsChange,
   onAssistantSubmit,
+  onAssistantNewChat,
   initialTimelineUiState,
   onTimelineUiStateChange,
 }: ContextPaneHostProps) {
@@ -118,6 +120,7 @@ export function ContextPaneHost({
         onModelChange={onAssistantModelChange}
         onMentionsChange={onAssistantMentionsChange}
         onSubmit={onAssistantSubmit}
+        onNewChat={onAssistantNewChat}
         onJumpToCitation={onJumpToCitation}
       />
     );

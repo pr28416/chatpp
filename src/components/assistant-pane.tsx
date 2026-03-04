@@ -1,16 +1,19 @@
 import * as React from "react";
 import {
   AtSign,
+  Bot,
   Check,
   ChevronDown,
   Loader2,
   MessageSquare,
+  MessageSquarePlus,
   Send,
   X,
 } from "lucide-react";
 
 import { AssistantMarkdown } from "@/components/assistant-markdown";
 import { AssistantStreamBlocks } from "@/components/assistant-stream-blocks";
+import { PaneNavHeader } from "@/components/pane-nav-header";
 import { Button } from "@/components/ui/button";
 import {
   Popover,
@@ -46,6 +49,7 @@ interface AssistantPaneProps {
   onModelChange: (value: string) => void;
   onMentionsChange: (mentions: AssistantMention[]) => void;
   onSubmit: () => void;
+  onNewChat: () => void;
   onJumpToCitation: (chatId: number | null, rowid: number) => void;
 }
 
@@ -72,6 +76,7 @@ export function AssistantPane({
   onModelChange,
   onMentionsChange,
   onSubmit,
+  onNewChat,
   onJumpToCitation,
 }: AssistantPaneProps) {
   const [showMentionMenu, setShowMentionMenu] = React.useState(false);
@@ -83,6 +88,7 @@ export function AssistantPane({
   } | null>(null);
   const [composerHeight, setComposerHeight] = React.useState(140);
   const [showProcessingTrace, setShowProcessingTrace] = React.useState(true);
+  const [scrollTop, setScrollTop] = React.useState(0);
 
   const scrollRef = React.useRef<HTMLDivElement | null>(null);
   const textareaRef = React.useRef<HTMLTextAreaElement | null>(null);
@@ -107,6 +113,10 @@ export function AssistantPane({
     selectedModelOption && !isProviderReady
       ? getMissingProviderKeyMessage(selectedModelOption)
       : null;
+  const hasProcessingTrace = React.useMemo(
+    () => messages.some((message) => (message.processing_events?.length ?? 0) > 0),
+    [messages],
+  );
 
   const mentionCandidates = React.useMemo(() => {
     const q = mentionQuery.trim().toLowerCase();
@@ -293,25 +303,44 @@ export function AssistantPane({
 
   return (
     <div className="h-full min-h-0 flex flex-col bg-transparent relative">
+      <PaneNavHeader
+        title="Assistant"
+        collapsed={scrollTop > 12}
+        leading={<Bot className="h-4 w-4 text-primary" />}
+        trailing={(
+          <div className="flex items-center gap-1.5">
+            {hasProcessingTrace ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2 text-[11px] text-muted-foreground"
+                onClick={() => setShowProcessingTrace((prev) => !prev)}
+              >
+                {showProcessingTrace ? "Hide processing trace" : "Show processing trace"}
+              </Button>
+            ) : null}
+            <Button
+              type="button"
+              variant="outline"
+              size="icon-sm"
+              className="h-8 w-8"
+              onClick={onNewChat}
+              disabled={running}
+              aria-label="Start new chat"
+            >
+              <MessageSquarePlus className="h-4 w-4" />
+            </Button>
+          </div>
+        )}
+      />
+
       <div
         ref={scrollRef}
         className="flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-5"
         style={{ paddingBottom: composerHeight + 20 }}
+        onScroll={(evt) => setScrollTop(evt.currentTarget.scrollTop)}
       >
-        {messages.some((message) => (message.processing_events?.length ?? 0) > 0) ? (
-          <div className="flex justify-end">
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              className="h-7 px-2 text-[11px] text-muted-foreground"
-              onClick={() => setShowProcessingTrace((prev) => !prev)}
-            >
-              {showProcessingTrace ? "Hide processing trace" : "Show processing trace"}
-            </Button>
-          </div>
-        ) : null}
-
         {messages.length === 0 ? (
           <div className="rounded-lg border border-dashed border-border bg-card/70 p-3 text-xs text-muted-foreground">
             Ask about your archive, then add chats with @mentions as needed.
@@ -326,6 +355,11 @@ export function AssistantPane({
           onJumpToCitation={onJumpToCitation}
         />
       </div>
+
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-x-0 bottom-0 z-10 h-36 bg-gradient-to-t from-background via-background/80 to-transparent"
+      />
 
       <div
         ref={composerRef}
