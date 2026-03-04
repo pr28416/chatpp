@@ -6,13 +6,17 @@ import type { AssistantCitation, AssistantDisplayBlock } from "@/lib/types";
 
 interface AssistantStreamBlocksProps {
   blocks: AssistantDisplayBlock[];
-  citationByRowid: Record<number, AssistantCitation>;
+  citationByKey: Record<string, AssistantCitation>;
+  citationByUniqueRowid: Record<number, AssistantCitation>;
+  renderUnresolvedAsInvalid?: boolean;
   onJumpToCitation: (chatId: number | null, rowid: number) => void;
 }
 
 export function AssistantStreamBlocks({
   blocks,
-  citationByRowid,
+  citationByKey,
+  citationByUniqueRowid,
+  renderUnresolvedAsInvalid = true,
   onJumpToCitation,
 }: AssistantStreamBlocksProps) {
   if (blocks.length === 0) {
@@ -29,7 +33,9 @@ export function AssistantStreamBlocks({
             <AssistantMarkdown
               key={group.block.id}
               text={group.block.text ?? ""}
-              citationByRowid={citationByRowid}
+              citationByKey={citationByKey}
+              citationByUniqueRowid={citationByUniqueRowid}
+              renderUnresolvedAsInvalid={renderUnresolvedAsInvalid}
               onJumpToCitation={onJumpToCitation}
             />
           );

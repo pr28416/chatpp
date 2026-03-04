@@ -100,6 +100,14 @@ export default function App() {
   >({});
   const [error, setError] = React.useState<string | null>(null);
   const [loading, setLoading] = React.useState(true);
+  const assistantRunInFlightRef = React.useRef(false);
+  const activeAssistantRunRef = React.useRef<{
+    streamId: string;
+    pendingAssistantId: string;
+    runId: string | null;
+    phase: "streaming" | "final_received" | "closed";
+    unlisten: UnlistenFn | null;
+  } | null>(null);
 
   const {
     requestedJumpRowid,
@@ -225,9 +233,14 @@ export default function App() {
   );
 
   const handleAssistantSubmit = React.useCallback(async () => {
+    if (assistantRunInFlightRef.current) {
+      return;
+    }
+    assistantRunInFlightRef.current = true;
     const current = assistantUi;
     const trimmed = current.draft.trim();
     if (!trimmed || current.running) {
+      assistantRunInFlightRef.current = false;
       return;
     }
     const selectedModel = getAssistantModelOption(current.selected_model_id);
@@ -235,18 +248,21 @@ export default function App() {
       updateAssistantUi({
         error: `Unknown selected model: ${current.selected_model_id}`,
       });
+      assistantRunInFlightRef.current = false;
       return;
     }
     if (!assistantProviderAvailability[selectedModel.provider]) {
       updateAssistantUi({
         error: getMissingProviderKeyMessage(selectedModel),
       });
+      assistantRunInFlightRef.current = false;
       return;
     }
 
     const validMentionIds = current.mentions
       .filter((mention: AssistantMention) => trimmed.includes(`@${mention.label}`))
-      .map((mention: AssistantMention) => mention.chatId);
+      .map((mention: AssistantMention) => mention.chatId)
+      .filter((chatId) => Number.isInteger(chatId) && chatId > 0);
     const inferredScope = inferMentionedChatScopeFromDraft(trimmed, chats);
     const structuredMentionTokens = new Set(
       current.mentions
@@ -260,11 +276,12 @@ export default function App() {
       updateAssistantUi({
         error: `Mention is ambiguous: ${unresolvedAmbiguous.join(", ")}. Pick a specific conversation from the @ menu.`,
       });
+      assistantRunInFlightRef.current = false;
       return;
     }
     const dedupedMentionIds = Array.from(
       new Set([...validMentionIds, ...inferredScope.chatIds]),
-    );
+    ).filter((chatId) => Number.isInteger(chatId) && chatId > 0);
 
     const nowIso = new Date().toISOString();
     const userMsg: AssistantUiMessage = {
@@ -305,12 +322,41 @@ export default function App() {
     }));
 
     let unlisten: UnlistenFn | null = null;
+    activeAssistantRunRef.current = {
+      streamId,
+      pendingAssistantId,
+      runId: null,
+      phase: "streaming",
+      unlisten: null,
+    };
     try {
       unlisten = await listen<AssistantProcessingEvent>(
         `assistant-stream:${streamId}`,
         (event) => {
+          const session = activeAssistantRunRef.current;
+          if (!session || session.streamId !== streamId || session.phase !== "streaming") {
+            return;
+          }
           const payload = event.payload;
           if (!payload) return;
+          if (payload.run_id) {
+            if (session.runId && session.runId !== payload.run_id) {
+              return;
+            }
+            if (!session.runId) {
+              session.runId = payload.run_id;
+            }
+          } else if (session.runId) {
+            return;
+          }
+          if (payload.kind === "run-finish") {
+            session.phase = "final_received";
+            if (session.unlisten) {
+              const stop = session.unlisten;
+              session.unlisten = null;
+              stop();
+            }
+          }
           updateAssistantMessage(pendingAssistantId, (previous) => {
             const nextEvents = [...(previous?.processing_events ?? []), payload];
             const nextBlocks = appendEventToDisplayBlocks(
@@ -337,6 +383,9 @@ export default function App() {
           });
         },
       );
+      if (activeAssistantRunRef.current?.streamId === streamId) {
+        activeAssistantRunRef.current.unlisten = unlisten;
+      }
 
       const response = await assistantRunTurn({
         selected_chat_id: null,
@@ -348,6 +397,16 @@ export default function App() {
         stream_id: streamId,
         conversation: convo,
       });
+      const session = activeAssistantRunRef.current;
+      if (session && session.streamId === streamId) {
+        session.phase = "final_received";
+        if (session.unlisten) {
+          const stop = session.unlisten;
+          session.unlisten = null;
+          stop();
+        }
+      }
+      unlisten = null;
       updateAssistantMessage(pendingAssistantId, (previous) => ({
         text: response.text,
         status: "done",
@@ -386,6 +445,12 @@ export default function App() {
       if (unlisten) {
         unlisten();
       }
+      const session = activeAssistantRunRef.current;
+      if (session && session.streamId === streamId) {
+        session.phase = "closed";
+        activeAssistantRunRef.current = null;
+      }
+      assistantRunInFlightRef.current = false;
     }
   }, [
     assistantProviderAvailability,
@@ -567,7 +632,9 @@ function inferMentionedChatScopeFromDraft(
       return index.includes(token);
     });
     if (found.length === 1) {
-      matches.push(found[0].id);
+      if (Number.isInteger(found[0].id) && found[0].id > 0) {
+        matches.push(found[0].id);
+      }
       continue;
     }
     if (found.length > 1) {

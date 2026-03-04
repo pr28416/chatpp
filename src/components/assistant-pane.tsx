@@ -22,7 +22,7 @@ import {
   getAssistantModelOption,
   getMissingProviderKeyMessage,
 } from "@/lib/assistant-models";
-import { buildInlineCitations } from "@/lib/assistant-citations";
+import { buildInlineCitations, makeCitationKey } from "@/lib/assistant-citations";
 import { buildDisplayBlocksFromEvents } from "@/lib/assistant-stream-blocks";
 import { cn } from "@/lib/utils";
 import type {
@@ -82,6 +82,7 @@ export function AssistantPane({
     end: number;
   } | null>(null);
   const [composerHeight, setComposerHeight] = React.useState(140);
+  const [showProcessingTrace, setShowProcessingTrace] = React.useState(true);
 
   const scrollRef = React.useRef<HTMLDivElement | null>(null);
   const textareaRef = React.useRef<HTMLTextAreaElement | null>(null);
@@ -297,77 +298,33 @@ export function AssistantPane({
         className="flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-5"
         style={{ paddingBottom: composerHeight + 20 }}
       >
+        {messages.some((message) => (message.processing_events?.length ?? 0) > 0) ? (
+          <div className="flex justify-end">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2 text-[11px] text-muted-foreground"
+              onClick={() => setShowProcessingTrace((prev) => !prev)}
+            >
+              {showProcessingTrace ? "Hide processing trace" : "Show processing trace"}
+            </Button>
+          </div>
+        ) : null}
+
         {messages.length === 0 ? (
           <div className="rounded-lg border border-dashed border-border bg-card/70 p-3 text-xs text-muted-foreground">
             Ask about your archive, then add chats with @mentions as needed.
           </div>
         ) : null}
 
-        {messages.map((message) => {
-          const orderedBlocks =
-            message.role === "assistant"
-              ? buildDisplayBlocksFromEvents(
-                  message.processing_events ?? [],
-                  message.id,
-                  message.text,
-                )
-              : [];
-          const inlineCitations =
-            message.role === "assistant"
-              ? buildInlineCitations(
-                  message.text,
-                  message.citations ?? [],
-                  selectedChatId,
-                )
-              : [];
-          return (
-            <div key={message.id} className="text-sm">
-              <div className="mb-1 text-[11px] uppercase tracking-wide text-muted-foreground/90">
-                {message.role === "assistant" ? "Assistant" : "You"}
-              </div>
-
-              {message.role === "assistant" ? (
-                <div className="space-y-4">
-                  {orderedBlocks.length > 0 ? (
-                    <AssistantStreamBlocks
-                      blocks={orderedBlocks}
-                      citationByRowid={Object.fromEntries(
-                        inlineCitations.map((citation) => [
-                          citation.rowid,
-                          citation,
-                        ]),
-                      )}
-                      onJumpToCitation={onJumpToCitation}
-                    />
-                  ) : (
-                    <AssistantMarkdown
-                      text={message.text}
-                      citationByRowid={Object.fromEntries(
-                        inlineCitations.map((citation) => [
-                          citation.rowid,
-                          citation,
-                        ]),
-                      )}
-                      onJumpToCitation={onJumpToCitation}
-                    />
-                  )}
-                </div>
-              ) : (
-                <div className="whitespace-pre-wrap break-words leading-relaxed">
-                  {message.text}
-                </div>
-              )}
-
-              {inlineCitations.length > 0 ? (
-                <CitationGroups
-                  citations={inlineCitations}
-                  chats={chats}
-                  onJumpToCitation={onJumpToCitation}
-                />
-              ) : null}
-            </div>
-          );
-        })}
+        <AssistantTranscript
+          messages={messages}
+          showProcessingTrace={showProcessingTrace}
+          selectedChatId={selectedChatId}
+          chats={chats}
+          onJumpToCitation={onJumpToCitation}
+        />
       </div>
 
       <div
@@ -628,7 +585,7 @@ function CitationGroups({
                     {truncate(
                       citation.message_text ??
                         citation.reason ??
-                        "Referenced message",
+                        `Citation rowid ${citation.rowid}`,
                       130,
                     )}
                   </div>
@@ -673,7 +630,7 @@ function CitationGroups({
                               {truncate(
                                 citation.message_text ??
                                   citation.reason ??
-                                  "Referenced message",
+                                  `Citation rowid ${citation.rowid}`,
                                 150,
                               )}
                             </div>
@@ -691,6 +648,141 @@ function CitationGroups({
     </div>
   );
 }
+
+const AssistantTranscript = React.memo(function AssistantTranscript({
+  messages,
+  showProcessingTrace,
+  selectedChatId,
+  chats,
+  onJumpToCitation,
+}: {
+  messages: AssistantUiMessage[];
+  showProcessingTrace: boolean;
+  selectedChatId: number | null;
+  chats: Chat[];
+  onJumpToCitation: (chatId: number | null, rowid: number) => void;
+}) {
+  return (
+    <>
+      {messages.map((message) => (
+        <AssistantMessageItem
+          key={message.id}
+          message={message}
+          showProcessingTrace={showProcessingTrace}
+          selectedChatId={selectedChatId}
+          chats={chats}
+          onJumpToCitation={onJumpToCitation}
+        />
+      ))}
+    </>
+  );
+});
+
+const AssistantMessageItem = React.memo(function AssistantMessageItem({
+  message,
+  showProcessingTrace,
+  selectedChatId,
+  chats,
+  onJumpToCitation,
+}: {
+  message: AssistantUiMessage;
+  showProcessingTrace: boolean;
+  selectedChatId: number | null;
+  chats: Chat[];
+  onJumpToCitation: (chatId: number | null, rowid: number) => void;
+}) {
+  const orderedBlocks = React.useMemo(
+    () =>
+      message.role === "assistant"
+        ? buildDisplayBlocksFromEvents(
+            message.processing_events ?? [],
+            message.id,
+            message.text,
+          )
+        : [],
+    [message.role, message.processing_events, message.id, message.text],
+  );
+
+  const sourceCitations = React.useMemo(
+    () => message.citations ?? [],
+    [message.citations],
+  );
+
+  const inlineCitations = React.useMemo(
+    () =>
+      message.role === "assistant"
+        ? buildInlineCitations(message.text, sourceCitations, selectedChatId)
+        : [],
+    [message.role, message.text, sourceCitations, selectedChatId],
+  );
+
+  const citationsForLookup = inlineCitations;
+
+  const citationByKey = React.useMemo(
+    () =>
+      Object.fromEntries(
+        citationsForLookup.map((citation) => [
+          makeCitationKey(citation.chat_id, citation.rowid),
+          citation,
+        ]),
+      ),
+    [citationsForLookup],
+  );
+
+  const citationByUniqueRowid = React.useMemo(() => {
+    const rowidCounts = new Map<number, number>();
+    for (const citation of citationsForLookup) {
+      rowidCounts.set(citation.rowid, (rowidCounts.get(citation.rowid) ?? 0) + 1);
+    }
+    return Object.fromEntries(
+      citationsForLookup
+        .filter((citation) => (rowidCounts.get(citation.rowid) ?? 0) === 1)
+        .map((citation) => [citation.rowid, citation]),
+    );
+  }, [citationsForLookup]);
+
+  return (
+    <div className="text-sm">
+      <div className="mb-1 text-[11px] uppercase tracking-wide text-muted-foreground/90">
+        {message.role === "assistant" ? "Assistant" : "You"}
+      </div>
+
+      {message.role === "assistant" ? (
+        <div className="space-y-4">
+          {showProcessingTrace && orderedBlocks.length > 0 ? (
+            <AssistantStreamBlocks
+              blocks={orderedBlocks}
+              citationByKey={citationByKey}
+              citationByUniqueRowid={citationByUniqueRowid}
+              renderUnresolvedAsInvalid={message.status !== "streaming"}
+              onJumpToCitation={onJumpToCitation}
+            />
+          ) : (
+            <AssistantMarkdown
+              text={message.text}
+              citationByKey={citationByKey}
+              citationByUniqueRowid={citationByUniqueRowid}
+              renderUnresolvedAsInvalid={message.status !== "streaming"}
+              onJumpToCitation={onJumpToCitation}
+            />
+          )}
+        </div>
+      ) : (
+        <div className="whitespace-pre-wrap break-words leading-relaxed">
+          {message.text}
+        </div>
+      )}
+
+      {inlineCitations.length > 0 ? (
+        <CitationGroups
+          citations={inlineCitations}
+          chats={chats}
+          onJumpToCitation={onJumpToCitation}
+        />
+      ) : null}
+    </div>
+  );
+});
 
 function filterValidMentions(
   mentions: AssistantMention[],

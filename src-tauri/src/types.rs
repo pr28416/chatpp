@@ -143,9 +143,23 @@ pub struct AssistantCitation {
     pub label: String,
     pub chat_label: Option<String>,
     pub sender: Option<String>,
+    pub sender_handle: Option<String>,
     pub date: Option<String>,
     pub message_text: Option<String>,
     pub reason: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct AssistantMessageEvidenceRow {
+    pub chat_id: i32,
+    pub chat_label: Option<String>,
+    pub rowid: i32,
+    pub guid: String,
+    pub sender: Option<String>,
+    pub is_from_me: bool,
+    pub text: Option<String>,
+    pub date_iso: String,
+    pub date_human: String,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -167,6 +181,10 @@ pub struct AssistantTurnResponse {
 pub struct AssistantStreamEvent {
     pub kind: String,
     pub at_ms: u64,
+    pub run_id: Option<String>,
+    pub pass_index: Option<u32>,
+    pub pass_kind: Option<String>,
+    pub stream_text_enabled: Option<bool>,
     pub text: Option<String>,
     pub step_index: Option<u32>,
     pub tool_call_id: Option<String>,

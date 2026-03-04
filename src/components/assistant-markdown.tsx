@@ -2,21 +2,29 @@ import * as React from "react";
 import { MessageSquare } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { rewriteInlineRowidTokens } from "@/lib/assistant-citations";
+import { makeCitationKey, rewriteInlineRowidTokens } from "@/lib/assistant-citations";
+import { ContactAvatar } from "@/components/contact-avatar";
 import type { AssistantCitation } from "@/lib/types";
 
 interface AssistantMarkdownProps {
   text: string;
-  citationByRowid?: Record<number, AssistantCitation>;
+  citationByKey?: Record<string, AssistantCitation>;
+  citationByUniqueRowid?: Record<number, AssistantCitation>;
+  renderUnresolvedAsInvalid?: boolean;
   onJumpToCitation: (chatId: number | null, rowid: number) => void;
 }
 
 export function AssistantMarkdown({
   text,
-  citationByRowid,
+  citationByKey,
+  citationByUniqueRowid,
+  renderUnresolvedAsInvalid = true,
   onJumpToCitation,
 }: AssistantMarkdownProps) {
-  const normalized = React.useMemo(() => rewriteInlineRowidTokens(text), [text]);
+  const normalized = React.useMemo(
+    () => rewriteInlineRowidTokens(decodeEscapedUnicode(text)),
+    [text],
+  );
 
   return (
     <div className="max-w-none text-sm leading-relaxed [&_p]:my-2 [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_li]:my-0.5 [&_blockquote]:my-2 [&_blockquote]:border-l-2 [&_blockquote]:border-border [&_blockquote]:pl-3 [&_pre]:my-2 [&_pre]:overflow-x-auto [&_pre]:rounded-md [&_pre]:bg-muted [&_pre]:p-3 [&_hr]:my-3 [&_hr]:border-border">
@@ -24,19 +32,46 @@ export function AssistantMarkdown({
         remarkPlugins={[remarkGfm]}
         components={{
           a: ({ href, children }) => {
-            const rowid =
-              extractRowidFromHref(href) ?? extractRowidFromText(readNodeText(children));
-            if (rowid !== null) {
-              const citation = citationByRowid?.[rowid];
-              const chatId = citation?.chat_id ?? null;
-              const chipLabel = buildCitationChipLabel(citation);
+            const ref =
+              extractCitationRefFromHref(href) ??
+              extractCitationRefFromText(readNodeText(children));
+            if (ref) {
+              const citation = resolveCitation(ref, citationByKey, citationByUniqueRowid);
+              if (!citation) {
+                if (!renderUnresolvedAsInvalid) {
+                  return (
+                    <button
+                      type="button"
+                      onClick={() => onJumpToCitation(ref.chatId, ref.rowid)}
+                      className="inline-flex items-center gap-1 rounded-full border border-border bg-muted/60 px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-muted/90 align-middle"
+                    >
+                      <MessageSquare className="h-2.5 w-2.5" />
+                      <span className="truncate max-w-[12rem]">{`cite:${ref.chatId}:${ref.rowid}`}</span>
+                    </button>
+                  );
+                }
+                return (
+                  <span className="inline-flex items-center gap-1 rounded-full border border-destructive/40 bg-destructive/10 px-1.5 py-0.5 text-[10px] text-destructive align-middle">
+                    <MessageSquare className="h-2.5 w-2.5" />
+                    <span className="truncate max-w-[12rem]">{`Invalid citation ${ref.rowid}`}</span>
+                  </span>
+                );
+              }
+              const chatId = citation.chat_id;
+              const rowid = citation.rowid;
+              const chipLabel = buildCitationChipLabel(citation, rowid);
               return (
                 <button
                   type="button"
                   onClick={() => onJumpToCitation(chatId, rowid)}
                   className="inline-flex items-center gap-1 rounded-full border border-border bg-muted/70 px-1.5 py-0.5 text-[10px] text-foreground hover:bg-muted/90 align-middle"
                 >
-                  <MessageSquare className="h-2.5 w-2.5" />
+                  <ContactAvatar
+                    handleId={citation.sender_handle ?? null}
+                    name={citation.sender?.trim() || citation.chat_label?.trim() || "Citation"}
+                    size={12}
+                    className="ring-0"
+                  />
                   <span className="truncate max-w-[12rem]">{chipLabel}</span>
                 </button>
               );
@@ -69,26 +104,37 @@ export function AssistantMarkdown({
   );
 }
 
-function extractRowidFromHref(href?: string): number | null {
+interface ParsedCitationRef {
+  chatId: number;
+  rowid: number;
+}
+
+function extractCitationRefFromHref(href?: string): ParsedCitationRef | null {
   if (!href) {
     return null;
   }
   const decoded = decodeURIComponent(href).trim();
-  const match = decoded.match(/rowid:(?:\/\/)?(\d+)\b/i);
-  if (!match) {
-    return null;
+  const composite = decoded.match(/cite:(?:\/\/)?(\d+)[/:](\d+)\b/i);
+  if (composite) {
+    const chatId = Number(composite[1]);
+    const rowid = Number(composite[2]);
+    if (Number.isFinite(chatId) && Number.isFinite(rowid)) {
+      return { chatId, rowid };
+    }
   }
-  const rowid = Number(match[1]);
-  return Number.isFinite(rowid) ? rowid : null;
+  return null;
 }
 
-function extractRowidFromText(text: string): number | null {
-  const match = text.match(/\browid:(\d+)\b/i);
-  if (!match) {
-    return null;
+function extractCitationRefFromText(text: string): ParsedCitationRef | null {
+  const composite = text.match(/\bcite:(\d+):(\d+)\b/i);
+  if (composite) {
+    const chatId = Number(composite[1]);
+    const rowid = Number(composite[2]);
+    if (Number.isFinite(chatId) && Number.isFinite(rowid)) {
+      return { chatId, rowid };
+    }
   }
-  const rowid = Number(match[1]);
-  return Number.isFinite(rowid) ? rowid : null;
+  return null;
 }
 
 function readNodeText(node: React.ReactNode): string {
@@ -104,9 +150,9 @@ function readNodeText(node: React.ReactNode): string {
   return "";
 }
 
-function buildCitationChipLabel(citation?: AssistantCitation): string {
+function buildCitationChipLabel(citation: AssistantCitation | undefined, rowid: number): string {
   if (!citation) {
-    return "Referenced message";
+    return `Citation ${rowid}`;
   }
   if (citation.chat_label && citation.chat_label.trim().length > 0) {
     return truncate(citation.chat_label, 26);
@@ -119,7 +165,19 @@ function buildCitationChipLabel(citation?: AssistantCitation): string {
   if (citation.message_text && citation.message_text.trim().length > 0) {
     return truncate(citation.message_text.trim(), 30);
   }
-  return "Referenced message";
+  return `Citation ${rowid}`;
+}
+
+function resolveCitation(
+  ref: ParsedCitationRef,
+  citationByKey?: Record<string, AssistantCitation>,
+  citationByUniqueRowid?: Record<number, AssistantCitation>,
+): AssistantCitation | undefined {
+  const keyed = citationByKey?.[makeCitationKey(ref.chatId, ref.rowid)];
+  if (keyed) {
+    return keyed;
+  }
+  return citationByUniqueRowid?.[ref.rowid];
 }
 
 function formatChipTime(value: string): string {
@@ -139,4 +197,14 @@ function truncate(value: string, max: number): string {
   const normalized = value.replace(/\s+/g, " ").trim();
   if (normalized.length <= max) return normalized;
   return `${normalized.slice(0, max - 1)}…`;
+}
+
+function decodeEscapedUnicode(input: string): string {
+  const source = String(input ?? "");
+  if (!/\\u[0-9a-fA-F]{4}/.test(source)) {
+    return source;
+  }
+  return source.replace(/\\u([0-9a-fA-F]{4})/g, (_match, code) =>
+    String.fromCharCode(parseInt(code, 16)),
+  );
 }

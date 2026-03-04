@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use tauri::Emitter;
 
 pub fn run_assistant_turn(
@@ -16,12 +16,21 @@ pub fn run_assistant_turn(
     request: &AssistantTurnRequest,
     app_handle: &tauri::AppHandle,
 ) -> Result<AssistantTurnResponse, String> {
+    const MAX_PARALLEL_TOOL_CALLS: usize = 4;
+    let debug_enabled = assistant_debug_enabled();
     let mut child = spawn_agent_process()?;
+    if debug_enabled {
+        eprintln!(
+            "[assistant-debug] bridge run-start stream_id={} selected_chat_id={:?} mentioned_chat_ids={:?}",
+            request.stream_id, request.selected_chat_id, request.mentioned_chat_ids
+        );
+    }
 
-    let mut stdin = child
+    let stdin = child
         .stdin
         .take()
         .ok_or_else(|| "Failed to open assistant stdin".to_string())?;
+    let stdin = Arc::new(Mutex::new(stdin));
     let stdout = child
         .stdout
         .take()
@@ -61,6 +70,10 @@ pub fn run_assistant_turn(
             "tooling": {
                 "tools": [
                     "search_messages",
+                    "search_all_chats",
+                    "search_contacts",
+                    "find_chats_by_contact",
+                    "search_messages_by_contact",
                     "get_recent_messages",
                     "get_message_context",
                     "search_timeline",
@@ -71,11 +84,19 @@ pub fn run_assistant_turn(
         }
     });
 
-    writeln!(stdin, "{}", init).map_err(|e| e.to_string())?;
-    stdin.flush().map_err(|e| e.to_string())?;
+    {
+        let mut writer = stdin
+            .lock()
+            .map_err(|_| "Failed to lock assistant stdin".to_string())?;
+        writeln!(writer, "{}", init).map_err(|e| e.to_string())?;
+        writer.flush().map_err(|e| e.to_string())?;
+    }
 
     let mut reader = BufReader::new(stdout);
     let mut line = String::new();
+    let mut final_seen = false;
+    let mut tool_workers: Vec<std::thread::JoinHandle<()>> = Vec::new();
+    let tool_gate = Arc::new((Mutex::new(0usize), Condvar::new()));
 
     loop {
         line.clear();
@@ -102,26 +123,64 @@ pub fn run_assistant_turn(
                     .and_then(Value::as_str)
                     .ok_or_else(|| "tool_call missing tool_name".to_string())?;
                 let args = payload.get("args").cloned().unwrap_or_else(|| json!({}));
+                let stdin_writer = Arc::clone(&stdin);
+                let tool_name_owned = tool_name.to_string();
+                let id_owned = id.clone();
+                let state_snapshot = state.clone();
+                let tool_gate_clone = Arc::clone(&tool_gate);
+                let worker = std::thread::spawn(move || {
+                    let (gate_lock, gate_cv) = &*tool_gate_clone;
+                    {
+                        let mut in_flight = match gate_lock.lock() {
+                            Ok(value) => value,
+                            Err(_) => return,
+                        };
+                        while *in_flight >= MAX_PARALLEL_TOOL_CALLS {
+                            in_flight = match gate_cv.wait(in_flight) {
+                                Ok(value) => value,
+                                Err(_) => return,
+                            };
+                        }
+                        *in_flight += 1;
+                    }
 
-                let response = match assistant_tools::execute_tool(state, tool_name, args) {
-                    Ok(result) => json!({
-                        "type": "tool_result",
-                        "id": id,
-                        "ok": true,
-                        "result": result,
-                    }),
-                    Err(err) => json!({
-                        "type": "tool_result",
-                        "id": id,
-                        "ok": false,
-                        "error": err,
-                    }),
-                };
-
-                writeln!(stdin, "{}", response).map_err(|e| e.to_string())?;
-                stdin.flush().map_err(|e| e.to_string())?;
+                    let response =
+                        match assistant_tools::execute_tool(&state_snapshot, &tool_name_owned, args)
+                        {
+                            Ok(result) => json!({
+                                "type": "tool_result",
+                                "id": id_owned,
+                                "ok": true,
+                                "result": result,
+                            }),
+                            Err(err) => json!({
+                                "type": "tool_result",
+                                "id": id_owned,
+                                "ok": false,
+                                "error": err,
+                            }),
+                        };
+                    if let Ok(mut writer) = stdin_writer.lock() {
+                        let _ = writeln!(writer, "{}", response);
+                        let _ = writer.flush();
+                    }
+                    if let Ok(mut in_flight) = gate_lock.lock() {
+                        *in_flight = in_flight.saturating_sub(1);
+                        gate_cv.notify_one();
+                    }
+                });
+                tool_workers.push(worker);
             }
             "stream_event" => {
+                if final_seen {
+                    if debug_enabled {
+                        eprintln!(
+                            "[assistant-debug] bridge dropped post-final stream_event stream_id={}",
+                            request.stream_id
+                        );
+                    }
+                    continue;
+                }
                 let event: AssistantStreamEvent = serde_json::from_value(
                     payload
                         .get("event")
@@ -129,10 +188,32 @@ pub fn run_assistant_turn(
                         .ok_or_else(|| "stream_event missing event payload".to_string())?,
                 )
                 .map_err(|e| format!("Invalid stream event payload: {}", e))?;
+                if debug_enabled {
+                    eprintln!(
+                        "[assistant-debug] bridge stream-event kind={} at_ms={}",
+                        event.kind, event.at_ms
+                    );
+                }
 
                 emit_stream_event(app_handle, &request.stream_id, &event);
             }
             "final" => {
+                if final_seen {
+                    if debug_enabled {
+                        eprintln!(
+                            "[assistant-debug] bridge dropped duplicate final stream_id={}",
+                            request.stream_id
+                        );
+                    }
+                    continue;
+                }
+                final_seen = true;
+                if debug_enabled && final_seen {
+                    eprintln!(
+                        "[assistant-debug] bridge marked final_seen stream_id={}",
+                        request.stream_id
+                    );
+                }
                 let text = payload
                     .get("text")
                     .and_then(Value::as_str)
@@ -146,9 +227,22 @@ pub fn run_assistant_turn(
                         .unwrap_or_else(|| json!([])),
                 )
                 .map_err(|e| format!("Invalid citations from assistant: {}", e))?;
+                if debug_enabled {
+                    eprintln!(
+                        "[assistant-debug] bridge final raw_citations={} text_len={}",
+                        raw_citations.len(),
+                        text.len()
+                    );
+                }
 
                 let citations = assistant_tools::enrich_citations(state, &raw_citations)
                     .unwrap_or(raw_citations);
+                if debug_enabled {
+                    eprintln!(
+                        "[assistant-debug] bridge final enriched_citations={}",
+                        citations.len()
+                    );
+                }
 
                 let tool_traces: Vec<AssistantToolTrace> = serde_json::from_value(
                     payload
@@ -160,6 +254,9 @@ pub fn run_assistant_turn(
 
                 let duration_ms = payload.get("duration_ms").and_then(Value::as_u64);
 
+                for worker in tool_workers.drain(..) {
+                    let _ = worker.join();
+                }
                 let _ = child.wait();
                 let _ = stderr_handle.join();
 
@@ -182,6 +279,10 @@ pub fn run_assistant_turn(
                     &AssistantStreamEvent {
                         kind: "run-error".to_string(),
                         at_ms: 0,
+                        run_id: None,
+                        pass_index: None,
+                        pass_kind: None,
+                        stream_text_enabled: None,
                         text: Some(err.clone()),
                         step_index: None,
                         tool_call_id: None,
@@ -193,6 +294,9 @@ pub fn run_assistant_turn(
                         finish_reason: None,
                     },
                 );
+                for worker in tool_workers.drain(..) {
+                    let _ = worker.join();
+                }
                 let _ = child.wait();
                 let _ = stderr_handle.join();
                 return Err(err);
@@ -201,6 +305,9 @@ pub fn run_assistant_turn(
         }
     }
 
+    for worker in tool_workers.drain(..) {
+        let _ = worker.join();
+    }
     let status = child.wait().map_err(|e| e.to_string())?;
     let _ = stderr_handle.join();
     let stderr_tail = stderr_lines
@@ -230,6 +337,12 @@ pub fn run_assistant_turn(
             status, stderr_tail
         ))
     }
+}
+
+fn assistant_debug_enabled() -> bool {
+    std::env::var("ASSISTANT_DEBUG")
+        .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
 }
 
 fn emit_stream_event(app_handle: &tauri::AppHandle, stream_id: &str, event: &AssistantStreamEvent) {
