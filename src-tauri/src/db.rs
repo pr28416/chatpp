@@ -866,6 +866,72 @@ pub fn query_messages(
     })
 }
 
+pub fn get_message_by_chat_rowid(
+    db: &Connection,
+    chat_id: i32,
+    rowid: i32,
+    handles: &HashMap<i32, String>,
+    contact_names: &HashMap<String, String>,
+) -> Result<Option<MessageResponse>, Box<dyn std::error::Error + Send + Sync>> {
+    let sql = "SELECT *, c.chat_id,
+            (SELECT COUNT(*) FROM message_attachment_join a WHERE m.ROWID = a.message_id) AS num_attachments,
+            NULL AS deleted_from,
+            0 AS num_replies
+        FROM message AS m
+        JOIN chat_message_join AS c ON m.ROWID = c.message_id
+        WHERE c.chat_id = ?1 AND m.ROWID = ?2
+        LIMIT 1";
+
+    let mut stmt = db.prepare(sql)?;
+    let row = stmt.query_row([chat_id, rowid], |row| Ok(Message::from_row(row)));
+    let mut msg = match row {
+        Ok(Ok(parsed)) => parsed,
+        Ok(Err(_)) => return Ok(None),
+        Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+        Err(err) => return Err(Box::new(err)),
+    };
+
+    let has_text = msg
+        .text
+        .as_ref()
+        .map(|t| !t.trim().is_empty())
+        .unwrap_or(false);
+    if !has_text {
+        let _ = msg.generate_text(db);
+    }
+
+    let raw_handle = msg.handle_id.and_then(|hid| handles.get(&hid)).cloned();
+    let sender = raw_handle.as_ref().map(|handle_id_str| {
+        resolve_handle_name(handle_id_str, contact_names).unwrap_or_else(|| handle_id_str.clone())
+    });
+    let is_tapback = msg.is_tapback();
+
+    Ok(Some(MessageResponse {
+        rowid: msg.rowid,
+        guid: msg.guid,
+        text: msg.text,
+        is_from_me: msg.is_from_me,
+        date: apple_timestamp_to_iso(msg.date).unwrap_or_default(),
+        date_read: if msg.date_read != 0 {
+            apple_timestamp_to_iso(msg.date_read)
+        } else {
+            None
+        },
+        sender,
+        sender_handle: raw_handle,
+        service: msg.service,
+        associated_message_type: msg.associated_message_type,
+        associated_message_guid: msg.associated_message_guid,
+        num_attachments: msg.num_attachments,
+        attachments: Vec::new(),
+        reactions: Vec::new(),
+        reply_to_guid: msg.thread_originator_guid,
+        reply_to_part: msg.thread_originator_part,
+        num_replies: msg.num_replies,
+        is_tapback,
+    }))
+}
+
 // ── Reaction Helpers ────────────────────────────────────────────────────────
 
 fn extract_target_guid(assoc_guid: &str) -> String {
@@ -1087,7 +1153,7 @@ pub fn search_messages(
     }
 
     conditions.push(format!(
-        "INSTR(LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(m.text, ''), '’', '''), '‘', '''), '“', '\"'), '”', '\"'), '—', '-'), ' ', ' ')), ?{}) > 0",
+        "INSTR(LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(m.text, ''), '’', char(39)), '‘', char(39)), '“', '\"'), '”', '\"'), '—', '-'), ' ', ' ')), ?{}) > 0",
         idx
     ));
     sql_params.push(Box::new(query_lower.clone()));

@@ -1,9 +1,11 @@
 use crate::db;
 use crate::state::AppState;
 use crate::timeline_db;
-use crate::types::{AssistantCitation, MessageParams, SearchParams};
+use crate::types::{AssistantCitation, AssistantMessageEvidenceRow, MessageParams, SearchParams};
+use chrono::{DateTime, Local};
 use rusqlite::types::Value as SqlValue;
 use serde_json::{json, Value};
+use std::collections::HashSet;
 
 const SQL_DEFAULT_LIMIT: usize = 200;
 const SQL_MAX_LIMIT: usize = 500;
@@ -11,6 +13,10 @@ const SQL_MAX_LIMIT: usize = 500;
 pub fn execute_tool(state: &AppState, tool_name: &str, args: Value) -> Result<Value, String> {
     match tool_name {
         "search_messages" => tool_search_messages(state, args),
+        "search_all_chats" => tool_search_all_chats(state, args),
+        "search_contacts" => tool_search_contacts(state, args),
+        "find_chats_by_contact" => tool_find_chats_by_contact(state, args),
+        "search_messages_by_contact" => tool_search_messages_by_contact(state, args),
         "get_recent_messages" => tool_get_recent_messages(state, args),
         "get_message_context" => tool_get_message_context(state, args),
         "search_timeline" => tool_search_timeline(state, args),
@@ -150,6 +156,237 @@ fn tool_get_recent_messages(state: &AppState, args: Value) -> Result<Value, Stri
         }))
 }
 
+fn tool_search_all_chats(state: &AppState, args: Value) -> Result<Value, String> {
+    let q = args
+        .get("q")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| "q is required".to_string())?
+        .to_string();
+    let limit = args
+        .get("limit")
+        .and_then(Value::as_u64)
+        .map(|v| (v as usize).clamp(1, 240))
+        .unwrap_or(120);
+
+    let conn = rusqlite::Connection::open_with_flags(
+        &state.db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .map_err(|e| e.to_string())?;
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT c.chat_id AS chat_id, m.ROWID AS rowid
+             FROM message m
+             JOIN chat_message_join c ON c.message_id = m.ROWID
+             WHERE m.text IS NOT NULL
+               AND LOWER(m.text) LIKE LOWER(?1)
+             ORDER BY m.ROWID DESC
+             LIMIT ?2",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let mut rows = stmt
+        .query(rusqlite::params![format!("%{}%", q), i64::try_from(limit).unwrap_or(120)])
+        .map_err(|e| e.to_string())?;
+
+    let mut data_rows: Vec<Vec<Value>> = Vec::new();
+    while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+        let chat_id: i32 = row.get(0).map_err(|e| e.to_string())?;
+        let rowid: i32 = row.get(1).map_err(|e| e.to_string())?;
+        data_rows.push(vec![json!(chat_id), json!(rowid)]);
+    }
+    let column_names = vec!["chat_id".to_string(), "rowid".to_string()];
+    let normalized_rows =
+        normalize_sql_rows_to_messages(state, &conn, &column_names, &data_rows, true)?;
+
+    Ok(json!({
+        "query": q,
+        "results": normalized_rows,
+        "total": normalized_rows.len(),
+    }))
+}
+
+fn tool_search_contacts(state: &AppState, args: Value) -> Result<Value, String> {
+    let q = args
+        .get("q")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| "q is required".to_string())?
+        .to_string();
+    let limit = args
+        .get("limit")
+        .and_then(Value::as_u64)
+        .map(|v| (v as usize).clamp(1, 50))
+        .unwrap_or(12);
+    let needle = normalize_contact_token(&q);
+
+    let mut scored: Vec<(i32, Value)> = Vec::new();
+    for (handle, display_name) in &state.contact_names {
+        let handle_norm = normalize_contact_token(handle);
+        let name_norm = normalize_contact_token(display_name);
+        let score = contact_match_score(&needle, &name_norm, &handle_norm);
+        if score <= 0 {
+            continue;
+        }
+        let chat_ids = matching_chat_ids_for_contact(state, display_name, handle, 24);
+        scored.push((
+            score,
+            json!({
+                "display_name": display_name,
+                "handle": handle,
+                "score": score,
+                "chat_ids": chat_ids,
+            }),
+        ));
+    }
+    scored.sort_by(|a, b| b.0.cmp(&a.0));
+    let results: Vec<Value> = scored.into_iter().take(limit).map(|(_, row)| row).collect();
+    Ok(json!({
+        "query": q,
+        "results": results,
+        "total": results.len(),
+    }))
+}
+
+fn tool_find_chats_by_contact(state: &AppState, args: Value) -> Result<Value, String> {
+    let q = args
+        .get("name_or_handle")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| "name_or_handle is required".to_string())?
+        .to_string();
+    let limit = args
+        .get("limit")
+        .and_then(Value::as_u64)
+        .map(|v| (v as usize).clamp(1, 80))
+        .unwrap_or(24);
+    let ids = matching_chat_ids_for_contact(state, &q, &q, limit);
+    let results: Vec<Value> = ids
+        .into_iter()
+        .map(|chat_id| {
+            let participants = state
+                .chat_participants
+                .get(&chat_id)
+                .map(|pairs| {
+                    pairs
+                        .iter()
+                        .map(|(name, _)| name.clone())
+                        .collect::<Vec<String>>()
+                })
+                .unwrap_or_default();
+            let label = participants.join(", ");
+            json!({
+                "chat_id": chat_id,
+                "participants": participants,
+                "label": label,
+            })
+        })
+        .collect();
+    Ok(json!({
+        "query": q,
+        "results": results,
+        "total": results.len(),
+    }))
+}
+
+fn tool_search_messages_by_contact(state: &AppState, args: Value) -> Result<Value, String> {
+    let q = args
+        .get("name_or_handle")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| "name_or_handle is required".to_string())?
+        .to_string();
+    let text_filter = args
+        .get("q")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(normalize_sql_input);
+    let limit = args
+        .get("limit")
+        .and_then(Value::as_u64)
+        .map(|v| (v as usize).clamp(1, 240))
+        .unwrap_or(120);
+    let chat_ids = matching_chat_ids_for_contact(state, &q, &q, 80);
+    if chat_ids.is_empty() {
+        return Ok(json!({
+            "query": q,
+            "results": [],
+            "total": 0,
+        }));
+    }
+
+    let placeholders = std::iter::repeat("?")
+        .take(chat_ids.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = if text_filter.is_some() {
+        format!(
+            "SELECT c.chat_id AS chat_id, m.ROWID AS rowid
+             FROM message m
+             JOIN chat_message_join c ON c.message_id = m.ROWID
+             WHERE c.chat_id IN ({})
+               AND m.text IS NOT NULL
+               AND INSTR(LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(m.text, ''), '’', char(39)), '‘', char(39)), '“', '\"'), '”', '\"'), '—', '-'), ' ', ' ')), ?) > 0
+             ORDER BY m.ROWID DESC
+             LIMIT ?",
+            placeholders
+        )
+    } else {
+        format!(
+            "SELECT c.chat_id AS chat_id, m.ROWID AS rowid
+             FROM message m
+             JOIN chat_message_join c ON c.message_id = m.ROWID
+             WHERE c.chat_id IN ({})
+               AND m.text IS NOT NULL
+             ORDER BY m.ROWID DESC
+             LIMIT ?",
+            placeholders
+        )
+    };
+
+    let conn = rusqlite::Connection::open_with_flags(
+        &state.db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let mut params: Vec<SqlValue> = chat_ids
+        .iter()
+        .map(|chat_id| SqlValue::Integer(*chat_id as i64))
+        .collect();
+    if let Some(filter) = text_filter {
+        params.push(SqlValue::Text(filter.to_lowercase()));
+    }
+    params.push(SqlValue::Integer(i64::try_from(limit).unwrap_or(120)));
+
+    let mut rows = stmt
+        .query(rusqlite::params_from_iter(params))
+        .map_err(|e| e.to_string())?;
+    let mut data_rows: Vec<Vec<Value>> = Vec::new();
+    while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+        let chat_id: i32 = row.get(0).map_err(|e| e.to_string())?;
+        let rowid: i32 = row.get(1).map_err(|e| e.to_string())?;
+        data_rows.push(vec![json!(chat_id), json!(rowid)]);
+    }
+    let column_names = vec!["chat_id".to_string(), "rowid".to_string()];
+    let normalized_rows =
+        normalize_sql_rows_to_messages(state, &conn, &column_names, &data_rows, true)?;
+
+    Ok(json!({
+        "query": q,
+        "results": normalized_rows,
+        "total": normalized_rows.len(),
+        "chat_ids": chat_ids,
+    }))
+}
+
 fn tool_get_message_context(state: &AppState, args: Value) -> Result<Value, String> {
     let chat_id = as_i32(args.get("chat_id")).ok_or_else(|| "chat_id is required".to_string())?;
     let rowid = as_i32(args.get("rowid")).ok_or_else(|| "rowid is required".to_string())?;
@@ -241,13 +478,14 @@ fn tool_timeline_overview(state: &AppState, args: Value) -> Result<Value, String
 }
 
 fn tool_run_readonly_sql(state: &AppState, args: Value) -> Result<Value, String> {
-    let sql = args
+    let sql_raw = args
         .get("sql")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|v| !v.is_empty())
         .ok_or_else(|| "sql is required".to_string())?
         .to_string();
+    let sql = normalize_sql_input(&sql_raw);
 
     validate_readonly_sql(&sql)?;
 
@@ -269,17 +507,25 @@ fn tool_run_readonly_sql(state: &AppState, args: Value) -> Result<Value, String>
         .map(|arr| arr.iter().map(json_to_sql_value).collect())
         .unwrap_or_default();
 
-    let conn = match db_name.as_str() {
-        "timeline" => timeline_db::open_ro(&state.timeline_db_path).map_err(|e| e.to_string())?,
-        "chat" => rusqlite::Connection::open_with_flags(
-            &state.db_path,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-        )
-        .map_err(|e| e.to_string())?,
-        _ => return Err("db must be 'chat' or 'timeline'".to_string()),
-    };
+    if db_name != "chat" {
+        return Err(
+            "run_readonly_sql only supports db='chat' and must return message keys (rowid, chat_id)"
+                .to_string(),
+        );
+    }
 
-    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let conn = rusqlite::Connection::open_with_flags(
+        &state.db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .map_err(|e| e.to_string())?;
+
+    let mut stmt = conn.prepare(&sql).map_err(|e| {
+        format!(
+            "{}. Schema hints: message(ROWID,guid,text,date,handle_id,is_from_me), chat(ROWID,chat_identifier,display_name), chat_message_join(chat_id,message_id), handle(ROWID,id). Use chat.ROWID AS chat_id.",
+            e
+        )
+    })?;
 
     if !stmt.readonly() {
         return Err("Only read-only SQL queries are allowed".to_string());
@@ -310,14 +556,111 @@ fn tool_run_readonly_sql(state: &AppState, args: Value) -> Result<Value, String>
         data_rows.push(out_row);
     }
 
+    let normalized_rows =
+        normalize_sql_rows_to_messages(state, &conn, &column_names, &data_rows, false)?;
+
     Ok(json!({
         "db": db_name,
-        "columns": column_names,
-        "rows": data_rows,
-        "row_count": data_rows.len(),
+        "results": normalized_rows,
+        "total": normalized_rows.len(),
+        "source_row_count": data_rows.len(),
         "capped": capped,
         "limit": limit,
     }))
+}
+
+fn normalize_sql_rows_to_messages(
+    state: &AppState,
+    conn: &rusqlite::Connection,
+    column_names: &[String],
+    rows: &[Vec<Value>],
+    allow_empty: bool,
+) -> Result<Vec<AssistantMessageEvidenceRow>, String> {
+    let rowid_idx = find_column_index(
+        column_names,
+        &["rowid", "ROWID", "message_id", "message_rowid"],
+    )
+    .ok_or_else(|| {
+        "SQL result cannot be normalized: include message row id as `rowid` (or message_id/message_rowid)".to_string()
+    })?;
+    let chat_id_idx =
+        find_column_index(column_names, &["chat_id", "chatId"]).ok_or_else(|| {
+            "SQL result cannot be normalized: include conversation id as `chat_id`".to_string()
+        })?;
+
+    let mut keys: Vec<(i32, i32)> = Vec::new();
+    let mut seen = HashSet::new();
+    for (row_idx, row) in rows.iter().enumerate() {
+        let rowid = row
+            .get(rowid_idx)
+            .and_then(value_to_i32)
+            .ok_or_else(|| format!("SQL row {} has invalid rowid", row_idx + 1))?;
+        let chat_id = row
+            .get(chat_id_idx)
+            .and_then(value_to_i32)
+            .ok_or_else(|| format!("SQL row {} has invalid chat_id", row_idx + 1))?;
+        if seen.insert((chat_id, rowid)) {
+            keys.push((chat_id, rowid));
+        }
+    }
+
+    let mut out = Vec::with_capacity(keys.len());
+    for (chat_id, rowid) in keys {
+        let message = db::get_message_by_chat_rowid(
+            conn,
+            chat_id,
+            rowid,
+            &state.handles,
+            &state.contact_names,
+        )
+        .map_err(|e| e.to_string())?;
+        if let Some(message) = message {
+            let date_human = format_human_date(&message.date);
+            out.push(AssistantMessageEvidenceRow {
+                chat_id,
+                chat_label: chat_label_for(state, chat_id),
+                rowid,
+                guid: message.guid,
+                sender: message.sender,
+                is_from_me: message.is_from_me,
+                text: message.text,
+                date_iso: message.date,
+                date_human,
+            });
+        }
+    }
+
+    if out.is_empty() && !allow_empty {
+        return Err("SQL result did not map to any valid messages in the selected chats".to_string());
+    }
+
+    Ok(out)
+}
+
+fn find_column_index(column_names: &[String], aliases: &[&str]) -> Option<usize> {
+    column_names.iter().position(|col| {
+        aliases
+            .iter()
+            .any(|alias| col.eq_ignore_ascii_case(alias))
+    })
+}
+
+fn value_to_i32(value: &Value) -> Option<i32> {
+    match value {
+        Value::Number(n) => n.as_i64().and_then(|v| i32::try_from(v).ok()),
+        Value::String(s) => s.parse::<i64>().ok().and_then(|v| i32::try_from(v).ok()),
+        _ => None,
+    }
+}
+
+fn format_human_date(iso: &str) -> String {
+    if let Ok(parsed) = DateTime::parse_from_rfc3339(iso) {
+        return parsed
+            .with_timezone(&Local)
+            .format("%b %-d, %Y, %-I:%M %p")
+            .to_string();
+    }
+    iso.to_string()
 }
 
 fn validate_readonly_sql(sql: &str) -> Result<(), String> {
@@ -371,10 +714,103 @@ fn validate_readonly_sql(sql: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn normalize_sql_input(input: &str) -> String {
+    input
+        .replace('\u{2019}', "'")
+        .replace('\u{2018}', "'")
+        .replace('\u{201C}', "\"")
+        .replace('\u{201D}', "\"")
+        .replace('\u{2014}', "-")
+        .replace('\u{00A0}', " ")
+}
+
 fn contains_word(haystack: &str, needle: &str) -> bool {
     haystack
         .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
         .any(|token| token == needle)
+}
+
+fn normalize_contact_token(input: &str) -> String {
+    normalize_sql_input(input)
+        .to_lowercase()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '@' || c == '+' || c == '.' {
+                c
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn contact_match_score(needle: &str, name_norm: &str, handle_norm: &str) -> i32 {
+    if needle.is_empty() {
+        return 0;
+    }
+    if name_norm == needle || handle_norm == needle {
+        return 100;
+    }
+    if name_norm.starts_with(needle) || handle_norm.starts_with(needle) {
+        return 80;
+    }
+    if name_norm.contains(needle) || handle_norm.contains(needle) {
+        return 60;
+    }
+    let terms: Vec<&str> = needle.split_whitespace().collect();
+    if terms.is_empty() {
+        return 0;
+    }
+    let mut matches = 0_i32;
+    for term in terms {
+        if name_norm.contains(term) || handle_norm.contains(term) {
+            matches += 1;
+        }
+    }
+    if matches == 0 {
+        return 0;
+    }
+    30 + matches * 10
+}
+
+fn matching_chat_ids_for_contact(
+    state: &AppState,
+    display_name: &str,
+    handle: &str,
+    limit: usize,
+) -> Vec<i32> {
+    let name_norm = normalize_contact_token(display_name);
+    let handle_norm = normalize_contact_token(handle);
+    let mut scored: Vec<(i32, i32)> = Vec::new();
+    for (chat_id, participants) in &state.chat_participants {
+        let mut best = 0_i32;
+        for (participant_name, participant_handle) in participants {
+            let participant_name_norm = normalize_contact_token(participant_name);
+            let participant_handle_norm = normalize_contact_token(participant_handle);
+            best = best.max(contact_match_score(
+                &name_norm,
+                &participant_name_norm,
+                &participant_handle_norm,
+            ));
+            best = best.max(contact_match_score(
+                &handle_norm,
+                &participant_name_norm,
+                &participant_handle_norm,
+            ));
+        }
+        if best > 0 {
+            scored.push((best, *chat_id));
+        }
+    }
+    scored.sort_by(|a, b| b.0.cmp(&a.0));
+    scored
+        .into_iter()
+        .take(limit)
+        .map(|(_, chat_id)| chat_id)
+        .collect()
 }
 
 fn as_i32(value: Option<&Value>) -> Option<i32> {
@@ -439,8 +875,14 @@ pub fn enrich_citations(
         .map_err(|e| e.to_string())?;
 
     let mut enriched: Vec<AssistantCitation> = Vec::with_capacity(citations.len());
+    let mut seen: HashSet<(i32, i32)> = HashSet::new();
+    let debug_enabled = assistant_debug_enabled();
+    let mut dropped_missing = 0usize;
 
     for citation in citations {
+        if !seen.insert((citation.chat_id, citation.rowid)) {
+            continue;
+        }
         let row = stmt.query_row(rusqlite::params![citation.chat_id, citation.rowid], |row| {
             Ok((
                 row.get::<_, Option<String>>(0)?,
@@ -452,8 +894,9 @@ pub fn enrich_citations(
 
         match row {
             Ok((text, apple_ts, handle_id, is_from_me)) => {
-                let sender = handle_id
-                    .and_then(|hid| state.handles.get(&hid))
+                let sender_handle = handle_id.and_then(|hid| state.handles.get(&hid)).cloned();
+                let sender = sender_handle
+                    .as_ref()
                     .map(|raw| {
                         db::resolve_handle_name(raw, &state.contact_names)
                             .unwrap_or_else(|| raw.clone())
@@ -471,27 +914,35 @@ pub fn enrich_citations(
                     label: citation.label.clone(),
                     chat_label: chat_label_for(state, citation.chat_id),
                     sender,
+                    sender_handle,
                     date: db::apple_timestamp_to_iso(apple_ts),
                     message_text: text,
                     reason: citation.reason.clone(),
                 });
             }
-            Err(_) => {
-                enriched.push(AssistantCitation {
-                    chat_id: citation.chat_id,
-                    rowid: citation.rowid,
-                    label: citation.label.clone(),
-                    chat_label: chat_label_for(state, citation.chat_id),
-                    sender: None,
-                    date: None,
-                    message_text: None,
-                    reason: citation.reason.clone(),
-                });
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                dropped_missing += 1;
             }
+            Err(err) => return Err(err.to_string()),
         }
     }
 
+    if debug_enabled {
+        eprintln!(
+            "[assistant-debug] citations enrich requested={} enriched={} dropped_missing={}",
+            citations.len(),
+            enriched.len(),
+            dropped_missing
+        );
+    }
+
     Ok(enriched)
+}
+
+fn assistant_debug_enabled() -> bool {
+    std::env::var("ASSISTANT_DEBUG")
+        .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
 }
 
 fn chat_label_for(state: &AppState, chat_id: i32) -> Option<String> {

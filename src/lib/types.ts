@@ -116,6 +116,7 @@ export interface AssistantCitation {
   label: string;
   chat_label?: string;
   sender?: string | null;
+  sender_handle?: string | null;
   date?: string | null;
   message_text?: string | null;
   reason?: string;
@@ -161,9 +162,14 @@ export interface AssistantProcessingEvent {
     | "text-delta"
     | "policy-fallback-start"
     | "policy-fallback-finish"
+    | "citation-warning"
     | "run-finish"
     | "run-error";
   at_ms: number;
+  run_id?: string;
+  pass_index?: number | null;
+  pass_kind?: string | null;
+  stream_text_enabled?: boolean | null;
   text?: string;
   step_index?: number;
   tool_call_id?: string;

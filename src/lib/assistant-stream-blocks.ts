@@ -20,6 +20,17 @@ export function appendEventToDisplayBlocks(
   event: AssistantProcessingEvent,
   messageId: string,
 ): AssistantDisplayBlock[] {
+  if (event.kind === "policy-fallback-start") {
+    return [
+      ...previous,
+      {
+        id: makeBlockId(messageId, "tool_call", `retry-${event.at_ms}`, previous.length),
+        kind: "tool_call",
+        text: event.text ?? "Revising answer with better evidence",
+      },
+    ];
+  }
+
   if (event.kind === "text-delta" && event.text) {
     return appendStreamingDelta(previous, "text", event.text, messageId, event.at_ms);
   }
@@ -42,6 +53,10 @@ export function appendEventToDisplayBlocks(
   }
 
   if (event.kind === "tool-finish") {
+    const failureDetail =
+      event.success === false && event.output_preview
+        ? `: ${compact(event.output_preview, 160)}`
+        : "";
     return [
       ...previous,
       {
@@ -49,7 +64,7 @@ export function appendEventToDisplayBlocks(
         kind: "tool_result",
         text:
           event.success === false
-            ? `Tool failed: ${friendlyToolName(event.tool_name)}`
+            ? `Tool failed: ${friendlyToolName(event.tool_name)}${failureDetail}`
             : `${friendlyToolName(event.tool_name)} complete`,
         tool_name: event.tool_name,
         tool_call_id: event.tool_call_id,
@@ -66,6 +81,17 @@ export function appendEventToDisplayBlocks(
         id: makeBlockId(messageId, "error", String(event.at_ms), previous.length),
         kind: "error",
         text: event.text ? `Error: ${event.text}` : "Error: Unknown error",
+      },
+    ];
+  }
+
+  if (event.kind === "citation-warning" && event.text) {
+    return [
+      ...previous,
+      {
+        id: makeBlockId(messageId, "tool_result", `citation-${event.at_ms}`, previous.length),
+        kind: "tool_result",
+        text: compact(event.text, 180),
       },
     ];
   }
@@ -98,7 +124,59 @@ export function syncDisplayBlocksWithFinalText(
     return appendStreamingDelta(previous, "text", remainder, messageId, Date.now());
   }
 
-  return previous;
+  return reconcileTextBlocksInPlace(previous, finalText, messageId);
+}
+
+function reconcileTextBlocksInPlace(
+  previous: AssistantDisplayBlock[],
+  finalText: string,
+  messageId: string,
+): AssistantDisplayBlock[] {
+  const textIndices: number[] = [];
+  for (let idx = 0; idx < previous.length; idx += 1) {
+    if (previous[idx]?.kind === "text") {
+      textIndices.push(idx);
+    }
+  }
+
+  if (textIndices.length === 0) {
+    return appendStreamingDelta(previous, "text", finalText, messageId, Date.now());
+  }
+
+  const sourceLengths = textIndices.map((index) => (previous[index]?.text ?? "").length);
+  const textIndicesMap = new Map<number, number>();
+  textIndices.forEach((index, slot) => {
+    textIndicesMap.set(index, slot);
+  });
+  const pieces: string[] = [];
+  let cursor = 0;
+  for (let i = 0; i < textIndices.length; i += 1) {
+    if (i === textIndices.length - 1) {
+      pieces.push(finalText.slice(cursor));
+      break;
+    }
+    const size = sourceLengths[i] ?? 0;
+    if (size <= 0) {
+      pieces.push("");
+      continue;
+    }
+    pieces.push(finalText.slice(cursor, cursor + size));
+    cursor += size;
+  }
+
+  const out = previous.map((block, index) => {
+    if (block.kind !== "text") {
+      return block;
+    }
+    const textSlot = textIndicesMap.get(index) ?? -1;
+    const nextText = textSlot >= 0 ? pieces[textSlot] ?? "" : block.text ?? "";
+    return {
+      ...block,
+      text: nextText,
+    };
+  });
+
+  return out.filter((block) => block.kind !== "text" || (block.text ?? "").length > 0);
 }
 
 function appendStreamingDelta(
@@ -146,6 +224,14 @@ function friendlyToolName(toolName?: string): string {
   switch (toolName) {
     case "search_messages":
       return "message search";
+    case "search_all_chats":
+      return "cross-chat search";
+    case "search_contacts":
+      return "contact search";
+    case "find_chats_by_contact":
+      return "contact chat lookup";
+    case "search_messages_by_contact":
+      return "contact message search";
     case "get_message_context":
       return "message context fetch";
     case "search_timeline":
@@ -157,4 +243,12 @@ function friendlyToolName(toolName?: string): string {
     default:
       return toolName ?? "tool";
   }
+}
+
+function compact(text: string, max: number): string {
+  const normalized = String(text).replace(/\s+/g, " ").trim();
+  if (normalized.length <= max) {
+    return normalized;
+  }
+  return `${normalized.slice(0, max - 1)}…`;
 }

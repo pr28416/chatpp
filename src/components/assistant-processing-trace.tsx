@@ -218,6 +218,14 @@ function friendlyToolName(toolName?: string): string {
   switch (toolName) {
     case "search_messages":
       return "Message search";
+    case "search_all_chats":
+      return "Cross-chat search";
+    case "search_contacts":
+      return "Contact search";
+    case "find_chats_by_contact":
+      return "Contact chat lookup";
+    case "search_messages_by_contact":
+      return "Contact message search";
     case "get_message_context":
       return "Message context fetch";
     case "search_timeline":
