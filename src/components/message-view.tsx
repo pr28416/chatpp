@@ -277,20 +277,6 @@ export function MessageView({
   );
 
   React.useEffect(() => {
-    if (requestedJumpRowid == null) return;
-    if (requestedJumpChatId != null && chat?.id !== requestedJumpChatId) return;
-    let cancelled = false;
-    void (async () => {
-      await jumpToRowid(requestedJumpRowid);
-      if (cancelled) return;
-      onJumpHandled?.(requestedJumpRowid, requestedJumpChatId ?? chat?.id ?? null);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [chat?.id, jumpToRowid, onJumpHandled, requestedJumpChatId, requestedJumpRowid]);
-
-  React.useEffect(() => {
     onHighlightChange?.(highlightedRowid);
   }, [highlightedRowid, onHighlightChange]);
 
@@ -507,6 +493,22 @@ export function MessageView({
       }
     };
   }, [chat, dateRange, applyMessagePayload]);
+
+  // Declare after chat-load effect so citation jumps can invalidate stale initial-load
+  // responses via activeLoadIdRef and reliably land on first click.
+  React.useEffect(() => {
+    if (requestedJumpRowid == null) return;
+    if (requestedJumpChatId != null && chat?.id !== requestedJumpChatId) return;
+    let cancelled = false;
+    void (async () => {
+      await jumpToRowid(requestedJumpRowid);
+      if (cancelled) return;
+      onJumpHandled?.(requestedJumpRowid, requestedJumpChatId ?? chat?.id ?? null);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [chat?.id, jumpToRowid, onJumpHandled, requestedJumpChatId, requestedJumpRowid]);
 
   React.useLayoutEffect(() => {
     if (scrollToAfterPrepend.current !== null) {
