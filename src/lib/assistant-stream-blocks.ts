@@ -1,4 +1,5 @@
 import type { AssistantDisplayBlock, AssistantProcessingEvent } from "@/lib/types";
+import { formatToolFinishLabel, formatToolStartLabel } from "@/lib/assistant-tool-status";
 
 export function buildDisplayBlocksFromEvents(
   events: AssistantProcessingEvent[],
@@ -45,7 +46,7 @@ export function appendEventToDisplayBlocks(
       {
         id: makeBlockId(messageId, "tool_call", event.tool_call_id ?? String(event.at_ms), previous.length),
         kind: "tool_call",
-        text: describeToolCall(event.tool_name),
+        text: formatToolStartLabel(event),
         tool_name: event.tool_name,
         tool_call_id: event.tool_call_id,
       },
@@ -53,19 +54,12 @@ export function appendEventToDisplayBlocks(
   }
 
   if (event.kind === "tool-finish") {
-    const failureDetail =
-      event.success === false && event.output_preview
-        ? `: ${compact(event.output_preview, 160)}`
-        : "";
     return [
       ...previous,
       {
         id: makeBlockId(messageId, "tool_result", event.tool_call_id ?? String(event.at_ms), previous.length),
         kind: "tool_result",
-        text:
-          event.success === false
-            ? `Tool failed: ${friendlyToolName(event.tool_name)}${failureDetail}`
-            : `${friendlyToolName(event.tool_name)} complete`,
+        text: formatToolFinishLabel(event),
         tool_name: event.tool_name,
         tool_call_id: event.tool_call_id,
         success: event.success,
@@ -214,35 +208,6 @@ function makeBlockId(
   index: number,
 ): string {
   return `${messageId}:${index}:${kind}:${token}`;
-}
-
-function describeToolCall(toolName?: string): string {
-  return `Running ${friendlyToolName(toolName)}`;
-}
-
-function friendlyToolName(toolName?: string): string {
-  switch (toolName) {
-    case "search_messages":
-      return "message search";
-    case "search_all_chats":
-      return "cross-chat search";
-    case "search_contacts":
-      return "contact search";
-    case "find_chats_by_contact":
-      return "contact chat lookup";
-    case "search_messages_by_contact":
-      return "contact message search";
-    case "get_message_context":
-      return "message context fetch";
-    case "search_timeline":
-      return "timeline search";
-    case "timeline_overview":
-      return "timeline status check";
-    case "run_readonly_sql":
-      return "read-only SQL";
-    default:
-      return toolName ?? "tool";
-  }
 }
 
 function compact(text: string, max: number): string {

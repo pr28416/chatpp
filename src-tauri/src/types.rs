@@ -177,6 +177,8 @@ pub struct AssistantStreamEvent {
     pub tool_name: Option<String>,
     pub input_preview: Option<String>,
     pub output_preview: Option<String>,
+    pub input_summary: Option<String>,
+    pub output_summary: Option<String>,
     pub success: Option<bool>,
     pub duration_ms: Option<u64>,
     pub finish_reason: Option<String>,

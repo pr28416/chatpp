@@ -2,6 +2,7 @@ import * as React from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { Brain, ChevronDown, Sparkles, Wrench } from "lucide-react";
 
+import { formatToolFinishLabel, formatToolStartLabel } from "@/lib/assistant-tool-status";
 import type { AssistantProcessingEvent } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -113,7 +114,7 @@ function buildTraceEntries(events: AssistantProcessingEvent[]): TraceEntry[] {
       entries.push({
         id: `tool-start-${event.tool_call_id ?? event.at_ms}`,
         icon: "tool",
-        label: describeToolCall(event.tool_name, event.input_preview),
+        label: formatToolStartLabel(event),
       });
       continue;
     }
@@ -122,12 +123,7 @@ function buildTraceEntries(events: AssistantProcessingEvent[]): TraceEntry[] {
       entries.push({
         id: `tool-finish-${event.tool_call_id ?? event.at_ms}`,
         icon: "tool",
-        label:
-          event.success === false
-            ? `Tool failed: ${friendlyToolName(event.tool_name)}`
-            : `${friendlyToolName(event.tool_name)} complete${
-                event.duration_ms ? ` (${formatDuration(event.duration_ms)})` : ""
-              }`,
+        label: `${formatToolFinishLabel(event)}${event.duration_ms ? ` (${formatDuration(event.duration_ms)})` : ""}`,
       });
       continue;
     }
@@ -163,80 +159,6 @@ function upsertStreamingEntry(
     return;
   }
   entries.push({ id, icon, label: `${prefix}: ${compact(delta, 180)}` });
-}
-
-function describeToolCall(toolName?: string, inputPreview?: string): string {
-  const parsedInput = parseJsonObject(inputPreview);
-
-  if (toolName === "search_messages") {
-    const query = maybeQuoted(parsedInput?.q);
-    return `Searching messages${query ? ` for ${query}` : ""}`;
-  }
-  if (toolName === "get_message_context") {
-    return "Reading nearby messages for context";
-  }
-  if (toolName === "search_timeline") {
-    const query = maybeQuoted(parsedInput?.q);
-    return `Searching timeline${query ? ` for ${query}` : ""}`;
-  }
-  if (toolName === "timeline_overview") {
-    return "Checking timeline index coverage";
-  }
-  if (toolName === "run_readonly_sql") {
-    return "Running a read-only SQL lookup";
-  }
-
-  return `Running ${friendlyToolName(toolName)}`;
-}
-
-function parseJsonObject(inputPreview?: string): Record<string, unknown> | null {
-  if (!inputPreview) {
-    return null;
-  }
-  try {
-    const parsed = JSON.parse(inputPreview);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-function maybeQuoted(value: unknown): string | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return null;
-  }
-  return `"${compact(trimmed, 48)}"`;
-}
-
-function friendlyToolName(toolName?: string): string {
-  switch (toolName) {
-    case "search_messages":
-      return "Message search";
-    case "search_all_chats":
-      return "Cross-chat search";
-    case "search_contacts":
-      return "Contact search";
-    case "find_chats_by_contact":
-      return "Contact chat lookup";
-    case "search_messages_by_contact":
-      return "Contact message search";
-    case "get_message_context":
-      return "Message context fetch";
-    case "search_timeline":
-      return "Timeline search";
-    case "timeline_overview":
-      return "Timeline status check";
-    case "run_readonly_sql":
-      return "Read-only SQL";
-    default:
-      return toolName ?? "tool";
-  }
 }
 
 function compact(text: string, max: number): string {

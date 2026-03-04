@@ -273,6 +273,8 @@ pub fn run_assistant_turn(
                         tool_name: None,
                         input_preview: None,
                         output_preview: None,
+                        input_summary: None,
+                        output_summary: None,
                         success: None,
                         duration_ms: None,
                         finish_reason: None,

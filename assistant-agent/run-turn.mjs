@@ -265,6 +265,7 @@ async function runTurn(payload) {
       tool_call_id: id,
       tool_name: toolName,
       input_preview: compact(safeStringify(input), 180),
+      input_summary: summarizeToolStart(toolName, input, chatContextById, toolTraceLog),
     });
 
     try {
@@ -304,6 +305,7 @@ async function runTurn(payload) {
         success: true,
         duration_ms: Date.now() - toolStartedAt,
         output_preview: compact(safeStringify(output), 220),
+        output_summary: summarizeToolFinish(toolName, input, output),
       });
 
       return output;
@@ -320,6 +322,7 @@ async function runTurn(payload) {
         success: false,
         duration_ms: Date.now() - toolStartedAt,
         output_preview: compact(err instanceof Error ? err.message : String(err), 220),
+        output_summary: null,
       });
       throw err;
     }
@@ -1926,6 +1929,327 @@ function shouldPrefetchRecentMessages(userMessage, scopedChatIds) {
     return false;
   }
   return /\b(message|messages|chat|chats)\b/.test(normalized);
+}
+
+function summarizeToolStart(toolName, input, chatContextById, toolTraces = []) {
+  const payload = isRecord(input) ? input : {};
+  if (toolName === 'search_contacts') {
+    const query = maybeQuoted(payload.q);
+    return `Searching contacts${query ? ` for ${query}` : ''}`;
+  }
+  if (toolName === 'find_chats_by_contact') {
+    const contact = asOptionalString(payload.name_or_handle);
+    return `Looking up chats${contact ? ` for ${compact(contact, 48)}` : ''}`;
+  }
+  if (toolName === 'search_messages_by_contact') {
+    const contact = asOptionalString(payload.name_or_handle);
+    const textFilter = maybeQuoted(payload.q);
+    return `Searching messages${contact ? ` with ${compact(contact, 48)}` : ''}${textFilter ? ` for ${textFilter}` : ''}`;
+  }
+  if (toolName === 'search_messages') {
+    const query = maybeQuoted(payload.q);
+    return `Searching messages${query ? ` for ${query}` : ''}`;
+  }
+  if (toolName === 'search_all_chats') {
+    const query = maybeQuoted(payload.q);
+    return `Searching all chats${query ? ` for ${query}` : ''}`;
+  }
+  if (toolName === 'get_recent_messages') {
+    const chatLabel = lookupChatLabel(chatContextById, payload.chat_id);
+    const sender = asOptionalString(payload.sender);
+    return `Fetching recent messages${chatLabel ? ` in ${chatLabel}` : ''}${sender ? ` from ${compact(sender, 36)}` : ''}`;
+  }
+  if (toolName === 'get_message_context') {
+    const chatId = firstFiniteInt(payload.chat_id);
+    const rowid = firstFiniteInt(payload.rowid);
+    const hint = findMessageHintFromToolTraces(toolTraces, chatId, rowid);
+    if (hint) {
+      const snippet = asOptionalString(hint.text)
+        ? `"${compact(asOptionalString(hint.text), 40)}"`
+        : Number.isFinite(rowid)
+          ? `message ${rowid}`
+          : 'that message';
+      const parties = formatContextParties({
+        hint,
+        chatId,
+        chatContextById,
+      });
+      return `Fetching context around ${snippet}${parties ? ` ${parties}` : ''}`;
+    }
+    return Number.isFinite(rowid)
+      ? `Fetching context around message ${rowid}`
+      : 'Fetching nearby message context';
+  }
+  if (toolName === 'search_timeline') {
+    const query = maybeQuoted(payload.q);
+    return `Searching timeline${query ? ` for ${query}` : ''}`;
+  }
+  if (toolName === 'timeline_overview') {
+    return 'Checking timeline index status';
+  }
+  if (toolName === 'run_readonly_sql') {
+    return 'Running a read-only SQL query';
+  }
+  return null;
+}
+
+function summarizeToolFinish(toolName, input, output) {
+  const payload = isRecord(output) ? output : {};
+  const total = firstFiniteInt(payload.total, Array.isArray(payload.results) ? payload.results.length : NaN);
+
+  if (toolName === 'search_contacts') {
+    const results = Array.isArray(payload.results) ? payload.results : [];
+    if (results.length === 1) {
+      const person = asOptionalString(results[0]?.display_name, results[0]?.handle);
+      return person ? `Found 1 contact: ${compact(person, 56)}` : 'Found 1 contact';
+    }
+    return Number.isFinite(total) ? `Found ${total} contacts` : 'Contact search complete';
+  }
+
+  if (toolName === 'find_chats_by_contact') {
+    const results = Array.isArray(payload.results) ? payload.results : [];
+    if (results.length === 1) {
+      const label = asOptionalString(results[0]?.label);
+      return label ? `Found 1 chat: ${compact(label, 64)}` : 'Found 1 chat';
+    }
+    return Number.isFinite(total) ? `Found ${total} chats` : 'Chat lookup complete';
+  }
+
+  if (toolName === 'search_messages_by_contact' || toolName === 'search_messages') {
+    return Number.isFinite(total) ? `Found ${total} messages` : 'Message search complete';
+  }
+
+  if (toolName === 'search_all_chats') {
+    return Number.isFinite(total)
+      ? `Found ${total} messages across chats`
+      : 'Cross-chat search complete';
+  }
+
+  if (toolName === 'get_recent_messages') {
+    const results = Array.isArray(payload.results) ? payload.results : [];
+    const range = summarizeDateRange(results);
+    const count = Number.isFinite(total) ? total : results.length;
+    if (!count) {
+      return 'Retrieved 0 recent messages';
+    }
+    return range
+      ? `Retrieved ${count} recent messages from ${range}`
+      : `Retrieved ${count} recent messages`;
+  }
+
+  if (toolName === 'get_message_context') {
+    const messages = Array.isArray(payload.messages) ? payload.messages : [];
+    const range = summarizeDateRange(messages);
+    const count = messages.length;
+    if (!count) {
+      return 'Loaded 0 nearby messages';
+    }
+    return range
+      ? `Loaded ${count} nearby messages from ${range}`
+      : `Loaded ${count} nearby messages`;
+  }
+
+  if (toolName === 'search_timeline') {
+    const nodeCount = firstFiniteInt(payload.total, Array.isArray(payload.nodes) ? payload.nodes.length : NaN);
+    return Number.isFinite(nodeCount) ? `Found ${nodeCount} timeline matches` : 'Timeline search complete';
+  }
+
+  if (toolName === 'timeline_overview') {
+    const health = asOptionalString(payload.index_health);
+    const latest = asOptionalString(payload.latest_ts, payload.last_successful_run_at);
+    if (health && latest) {
+      return `Timeline status: ${health}, latest at ${formatShortDate(latest)}`;
+    }
+    if (health) {
+      return `Timeline status: ${health}`;
+    }
+    return 'Timeline status check complete';
+  }
+
+  if (toolName === 'run_readonly_sql') {
+    const capped = payload.capped === true;
+    const limit = firstFiniteInt(payload.limit);
+    if (Number.isFinite(total)) {
+      if (capped && Number.isFinite(limit)) {
+        return `Returned ${total} message rows (capped at ${limit})`;
+      }
+      return `Returned ${total} message rows`;
+    }
+    return 'Read-only SQL complete';
+  }
+
+  return null;
+}
+
+function maybeQuoted(value) {
+  const text = asOptionalString(value);
+  if (!text) {
+    return null;
+  }
+  return `"${compact(text, 48)}"`;
+}
+
+function lookupChatLabel(chatContextById, chatId) {
+  const id = firstFiniteInt(chatId);
+  if (!Number.isFinite(id) || !(chatContextById instanceof Map)) {
+    return null;
+  }
+  const context = chatContextById.get(id);
+  if (!context) {
+    return null;
+  }
+  return asOptionalString(context.label);
+}
+
+function summarizeDateRange(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return null;
+  }
+  const parsed = rows
+    .map((row) => extractMessageDate(row))
+    .filter((value) => value instanceof Date && Number.isFinite(value.getTime()));
+  if (parsed.length === 0) {
+    return null;
+  }
+  parsed.sort((a, b) => a.getTime() - b.getTime());
+  const first = parsed[0];
+  const last = parsed[parsed.length - 1];
+  if (!first || !last) {
+    return null;
+  }
+  if (first.getTime() === last.getTime()) {
+    return formatShortDate(first);
+  }
+  return `${formatShortDate(first)} to ${formatShortDate(last)}`;
+}
+
+function extractMessageDate(row) {
+  if (!isRecord(row)) {
+    return null;
+  }
+  const raw = asOptionalString(row.date, row.date_iso, row.date_human, row.start_ts, row.end_ts);
+  if (!raw) {
+    return null;
+  }
+  const parsed = new Date(raw);
+  if (Number.isFinite(parsed.getTime())) {
+    return parsed;
+  }
+  return null;
+}
+
+function formatShortDate(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (!Number.isFinite(date.getTime())) {
+    return typeof value === 'string' ? value : String(value);
+  }
+  return date.toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
+
+function isRecord(value) {
+  return value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function findMessageHintFromToolTraces(toolTraces, chatId, rowid) {
+  if (!Number.isFinite(rowid) || !Array.isArray(toolTraces)) {
+    return null;
+  }
+  for (let idx = toolTraces.length - 1; idx >= 0; idx -= 1) {
+    const trace = toolTraces[idx];
+    if (!trace || typeof trace.output !== 'string') {
+      continue;
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(trace.output);
+    } catch {
+      continue;
+    }
+    const candidate = findMessageHintInPayload(parsed, chatId, rowid);
+    if (candidate) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function findMessageHintInPayload(payload, chatId, rowid) {
+  if (!payload) {
+    return null;
+  }
+  const maybeArrays = [];
+  if (Array.isArray(payload)) {
+    maybeArrays.push(payload);
+  }
+  if (isRecord(payload)) {
+    if (Array.isArray(payload.results)) {
+      maybeArrays.push(payload.results);
+    }
+    if (Array.isArray(payload.messages)) {
+      maybeArrays.push(payload.messages);
+    }
+  }
+
+  for (const rows of maybeArrays) {
+    for (const row of rows) {
+      if (!isRecord(row)) {
+        continue;
+      }
+      const rowRowid = firstFiniteInt(row.rowid, row.ROWID, row.message_id, row.message_rowid);
+      if (!Number.isFinite(rowRowid) || rowRowid !== rowid) {
+        continue;
+      }
+      const rowChatId = firstFiniteInt(row.chat_id, row.chatId);
+      if (Number.isFinite(chatId) && Number.isFinite(rowChatId) && rowChatId !== chatId) {
+        continue;
+      }
+      return {
+        rowid: rowRowid,
+        chat_id: Number.isFinite(rowChatId) ? rowChatId : Number.isFinite(chatId) ? chatId : NaN,
+        text: asOptionalString(row.text),
+        sender: asOptionalString(row.sender),
+        is_from_me: row.is_from_me === true,
+      };
+    }
+  }
+  return null;
+}
+
+function formatContextParties({ hint, chatId, chatContextById }) {
+  const from = hint.is_from_me
+    ? 'You'
+    : asOptionalString(hint.sender) || 'Unknown sender';
+  const context = resolveChatContext(chatContextById, hint.chat_id, chatId);
+  if (hint.is_from_me) {
+    const recipients = context?.participants?.length
+      ? compact(context.participants.join(', '), 44)
+      : 'conversation';
+    return `from ${from} to ${recipients}`;
+  }
+  return `from ${from} to You`;
+}
+
+function resolveChatContext(chatContextById, ...candidateIds) {
+  if (!(chatContextById instanceof Map)) {
+    return null;
+  }
+  for (const idValue of candidateIds) {
+    const id = firstFiniteInt(idValue);
+    if (!Number.isFinite(id)) {
+      continue;
+    }
+    const found = chatContextById.get(id);
+    if (found) {
+      return found;
+    }
+  }
+  return null;
 }
 
 function emit(payload) {

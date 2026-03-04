@@ -175,6 +175,8 @@ export interface AssistantProcessingEvent {
   tool_name?: string;
   input_preview?: string;
   output_preview?: string;
+  input_summary?: string;
+  output_summary?: string;
   success?: boolean;
   duration_ms?: number;
   finish_reason?: string;
