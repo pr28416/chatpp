@@ -24,6 +24,8 @@ This document defines how agents should work in this repository: ship reliable c
 git fetch origin
 git worktree add ../desktop-v2-<feature> -b <feature-branch> origin/main
 cd ../desktop-v2-<feature>
+# Copy all environment files into the new worktree.
+rsync -av --include="*/" --include=".env*" --exclude="*" ../desktop-v2/ ./
 ```
 
 ## Code Quality Standards
