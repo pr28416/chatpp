@@ -1,4 +1,5 @@
 import readline from 'node:readline';
+import { writeSync } from 'node:fs';
 import { ToolLoopAgent, stepCountIs, tool } from 'ai';
 import { openai } from '@ai-sdk/openai';
 import { anthropic } from '@ai-sdk/anthropic';
@@ -770,7 +771,6 @@ async function runTurn(payload) {
   emit({
     type: 'final',
     text: finalText.trim(),
-    citations,
     tool_traces: toolTraceLog,
     duration_ms: durationMs,
   });
@@ -1929,7 +1929,12 @@ function shouldPrefetchRecentMessages(userMessage, scopedChatIds) {
 }
 
 function emit(payload) {
-  process.stdout.write(`${JSON.stringify(payload)}\n`);
+  const line = `${JSON.stringify(payload)}\n`;
+  try {
+    writeSync(1, line);
+  } catch {
+    process.stdout.write(line);
+  }
 }
 
 function emitStreamEvent(event) {

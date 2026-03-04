@@ -147,7 +147,6 @@ export interface AssistantUiMessage {
   processing_events?: AssistantProcessingEvent[];
   display_blocks?: AssistantDisplayBlock[];
   processing_duration_ms?: number;
-  citations?: AssistantCitation[];
   tool_traces?: AssistantToolTrace[];
 }
 
@@ -216,7 +215,6 @@ export interface AssistantConversationContext {
 export interface AssistantTurnResponse {
   text: string;
   duration_ms?: number;
-  citations: AssistantCitation[];
   tool_traces: AssistantToolTrace[];
 }
 

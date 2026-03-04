@@ -416,7 +416,6 @@ export default function App() {
           pendingAssistantId,
         ),
         processing_duration_ms: response.duration_ms,
-        citations: response.citations,
         tool_traces: response.tool_traces,
       }));
       updateAssistantUi({
