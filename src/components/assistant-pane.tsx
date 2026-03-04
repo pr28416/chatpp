@@ -115,10 +115,6 @@ export function AssistantPane({
     selectedModelOption && !isProviderReady
       ? getMissingProviderKeyMessage(selectedModelOption)
       : null;
-  const hasProcessingTrace = React.useMemo(
-    () => messages.some((message) => (message.processing_events?.length ?? 0) > 0),
-    [messages],
-  );
 
   const mentionCandidates = React.useMemo(() => {
     const q = mentionQuery.trim().toLowerCase();
@@ -311,17 +307,6 @@ export function AssistantPane({
         leading={<Bot className="h-4 w-4 text-primary" />}
         trailing={(
           <div className="flex items-center gap-1.5">
-            {hasProcessingTrace ? (
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="h-7 px-2 text-[11px] text-muted-foreground"
-                onClick={() => setShowProcessingTrace((prev) => !prev)}
-              >
-                {showProcessingTrace ? "Hide processing trace" : "Show processing trace"}
-              </Button>
-            ) : null}
             <Button
               type="button"
               variant="outline"
