@@ -73,6 +73,22 @@ pub fn get_messages(
 }
 
 #[tauri::command]
+pub fn get_message_by_chat_rowid(
+    state: tauri::State<'_, AppState>,
+    chat_id: i32,
+    rowid: i32,
+) -> Result<Option<MessageResponse>, String> {
+    let db = rusqlite::Connection::open_with_flags(
+        &state.db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .map_err(|e| e.to_string())?;
+
+    db::get_message_by_chat_rowid(&db, chat_id, rowid, &state.handles, &state.contact_names)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn search_messages(
     state: tauri::State<'_, AppState>,
     chat_id: i32,

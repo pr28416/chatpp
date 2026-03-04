@@ -25,8 +25,9 @@ import {
   getAssistantModelOption,
   getMissingProviderKeyMessage,
 } from "@/lib/assistant-models";
-import { buildInlineCitations, makeCitationKey } from "@/lib/assistant-citations";
+import { extractInlineCitationRefs, makeCitationKey } from "@/lib/assistant-citations";
 import { buildDisplayBlocksFromEvents } from "@/lib/assistant-stream-blocks";
+import { getMessageByChatRowid } from "@/lib/commands";
 import { cn } from "@/lib/utils";
 import type {
   AssistantCitation,
@@ -61,6 +62,7 @@ interface MentionCandidate {
 }
 
 const MAX_TEXTAREA_HEIGHT = 180;
+const citationCache = new Map<string, AssistantCitation | null>();
 
 export function AssistantPane({
   chats,
@@ -703,7 +705,6 @@ const AssistantTranscript = React.memo(function AssistantTranscript({
           key={message.id}
           message={message}
           showProcessingTrace={showProcessingTrace}
-          selectedChatId={selectedChatId}
           chats={chats}
           onJumpToCitation={onJumpToCitation}
         />
@@ -715,13 +716,11 @@ const AssistantTranscript = React.memo(function AssistantTranscript({
 const AssistantMessageItem = React.memo(function AssistantMessageItem({
   message,
   showProcessingTrace,
-  selectedChatId,
   chats,
   onJumpToCitation,
 }: {
   message: AssistantUiMessage;
   showProcessingTrace: boolean;
-  selectedChatId: number | null;
   chats: Chat[];
   onJumpToCitation: (chatId: number | null, rowid: number) => void;
 }) {
@@ -737,20 +736,95 @@ const AssistantMessageItem = React.memo(function AssistantMessageItem({
     [message.role, message.processing_events, message.id, message.text],
   );
 
-  const sourceCitations = React.useMemo(
-    () => message.citations ?? [],
-    [message.citations],
+  const inlineRefs = React.useMemo(
+    () => (message.role === "assistant" ? extractInlineCitationRefs(message.text) : []),
+    [message.role, message.text],
   );
+  const [citationDetails, setCitationDetails] = React.useState<Record<string, AssistantCitation>>({});
 
-  const inlineCitations = React.useMemo(
+  React.useEffect(() => {
+    if (inlineRefs.length === 0) {
+      setCitationDetails({});
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const entries = await Promise.all(
+        inlineRefs.map(async (ref): Promise<[string, AssistantCitation] | null> => {
+          const key = makeCitationKey(ref.chatId, ref.rowid);
+          const cached = citationCache.get(key);
+          if (cached === null) {
+            return [
+              key,
+              {
+                chat_id: ref.chatId,
+                rowid: ref.rowid,
+                label: `cite:${ref.chatId}:${ref.rowid}`,
+              },
+            ];
+          }
+          if (cached) {
+            return [key, cached];
+          }
+          try {
+            const row = await getMessageByChatRowid(ref.chatId, ref.rowid);
+            const chatLabel = chats.find((chat) => chat.id === ref.chatId)?.display_name ?? undefined;
+            const mapped: AssistantCitation = row
+              ? {
+                  chat_id: ref.chatId,
+                  rowid: ref.rowid,
+                  label: `cite:${ref.chatId}:${ref.rowid}`,
+                  chat_label: chatLabel,
+                  sender: row.sender,
+                  sender_handle: row.sender_handle,
+                  date: row.date,
+                  message_text: row.text ?? undefined,
+                }
+              : {
+                  chat_id: ref.chatId,
+                  rowid: ref.rowid,
+                  label: `cite:${ref.chatId}:${ref.rowid}`,
+                  chat_label: chatLabel,
+                };
+            citationCache.set(key, mapped);
+            return [key, mapped];
+          } catch {
+            citationCache.set(key, null);
+            return [
+              key,
+              {
+                chat_id: ref.chatId,
+                rowid: ref.rowid,
+                label: `cite:${ref.chatId}:${ref.rowid}`,
+              },
+            ];
+          }
+        }),
+      );
+      if (cancelled) return;
+      setCitationDetails(
+        Object.fromEntries(entries.filter((entry): entry is [string, AssistantCitation] => entry !== null)),
+      );
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [chats, inlineRefs]);
+
+  const citationsForLookup = React.useMemo(
     () =>
-      message.role === "assistant"
-        ? buildInlineCitations(message.text, sourceCitations, selectedChatId)
-        : [],
-    [message.role, message.text, sourceCitations, selectedChatId],
+      inlineRefs.map((ref) => {
+        const key = makeCitationKey(ref.chatId, ref.rowid);
+        return (
+          citationDetails[key] ?? {
+            chat_id: ref.chatId,
+            rowid: ref.rowid,
+            label: `cite:${ref.chatId}:${ref.rowid}`,
+          }
+        );
+      }),
+    [citationDetails, inlineRefs],
   );
-
-  const citationsForLookup = inlineCitations;
 
   const citationByKey = React.useMemo(
     () =>
@@ -807,9 +881,9 @@ const AssistantMessageItem = React.memo(function AssistantMessageItem({
         </div>
       )}
 
-      {inlineCitations.length > 0 ? (
+      {citationsForLookup.length > 0 ? (
         <CitationGroups
-          citations={inlineCitations}
+          citations={citationsForLookup}
           chats={chats}
           onJumpToCitation={onJumpToCitation}
         />

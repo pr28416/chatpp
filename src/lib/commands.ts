@@ -4,6 +4,7 @@ import type {
   AssistantTurnRequest,
   AssistantTurnResponse,
   Chat,
+  Message,
   PaginatedMessages,
   SearchResponse,
   TimelineNodeMessageScope,
@@ -54,6 +55,13 @@ export async function searchMessages(
     start: params.start,
     end: params.end,
   });
+}
+
+export async function getMessageByChatRowid(
+  chatId: number,
+  rowid: number,
+): Promise<Message | null> {
+  return invoke("get_message_by_chat_rowid", { chatId, rowid });
 }
 
 export async function fetchHandles(): Promise<Record<number, string>> {

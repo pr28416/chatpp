@@ -29,6 +29,7 @@ fn main() {
             commands::start_window_drag,
             commands::get_chats,
             commands::get_messages,
+            commands::get_message_by_chat_rowid,
             commands::search_messages,
             commands::get_handles,
             commands::get_contacts,

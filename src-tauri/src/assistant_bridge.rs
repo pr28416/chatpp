@@ -1,8 +1,7 @@
 use crate::assistant_tools;
 use crate::state::AppState;
 use crate::types::{
-    AssistantCitation, AssistantStreamEvent, AssistantToolTrace, AssistantTurnRequest,
-    AssistantTurnResponse,
+    AssistantStreamEvent, AssistantToolTrace, AssistantTurnRequest, AssistantTurnResponse,
 };
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
@@ -95,6 +94,7 @@ pub fn run_assistant_turn(
     let mut reader = BufReader::new(stdout);
     let mut line = String::new();
     let mut final_seen = false;
+    let mut streamed_text = String::new();
     let mut tool_workers: Vec<std::thread::JoinHandle<()>> = Vec::new();
     let tool_gate = Arc::new((Mutex::new(0usize), Condvar::new()));
 
@@ -194,6 +194,11 @@ pub fn run_assistant_turn(
                         event.kind, event.at_ms
                     );
                 }
+                if event.kind == "text-delta" {
+                    if let Some(delta) = &event.text {
+                        streamed_text.push_str(delta);
+                    }
+                }
 
                 emit_stream_event(app_handle, &request.stream_id, &event);
             }
@@ -220,28 +225,8 @@ pub fn run_assistant_turn(
                     .unwrap_or("")
                     .to_string();
 
-                let raw_citations: Vec<AssistantCitation> = serde_json::from_value(
-                    payload
-                        .get("citations")
-                        .cloned()
-                        .unwrap_or_else(|| json!([])),
-                )
-                .map_err(|e| format!("Invalid citations from assistant: {}", e))?;
                 if debug_enabled {
-                    eprintln!(
-                        "[assistant-debug] bridge final raw_citations={} text_len={}",
-                        raw_citations.len(),
-                        text.len()
-                    );
-                }
-
-                let citations = assistant_tools::enrich_citations(state, &raw_citations)
-                    .unwrap_or(raw_citations);
-                if debug_enabled {
-                    eprintln!(
-                        "[assistant-debug] bridge final enriched_citations={}",
-                        citations.len()
-                    );
+                    eprintln!("[assistant-debug] bridge final text_len={}", text.len());
                 }
 
                 let tool_traces: Vec<AssistantToolTrace> = serde_json::from_value(
@@ -263,7 +248,6 @@ pub fn run_assistant_turn(
                 return Ok(AssistantTurnResponse {
                     text,
                     duration_ms,
-                    citations,
                     tool_traces,
                 });
             }
@@ -313,7 +297,14 @@ pub fn run_assistant_turn(
     let stderr_tail = stderr_lines
         .lock()
         .ok()
-        .map(|lines| lines.join(" | "))
+        .map(|lines| {
+            lines
+                .iter()
+                .filter(|line| !is_benign_agent_warning(line))
+                .cloned()
+                .collect::<Vec<String>>()
+                .join(" | ")
+        })
         .unwrap_or_default();
 
     if !status.success() {
@@ -324,6 +315,14 @@ pub fn run_assistant_turn(
             "Assistant agent exited with status {}. Details: {}",
             status, stderr_tail
         ));
+    }
+
+    if !streamed_text.trim().is_empty() {
+        return Ok(AssistantTurnResponse {
+            text: streamed_text.trim().to_string(),
+            duration_ms: None,
+            tool_traces: Vec::new(),
+        });
     }
 
     if stderr_tail.is_empty() {
@@ -343,6 +342,12 @@ fn assistant_debug_enabled() -> bool {
     std::env::var("ASSISTANT_DEBUG")
         .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
         .unwrap_or(false)
+}
+
+fn is_benign_agent_warning(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    lower.contains("ai sdk warning")
+        && (lower.contains("specificationversion") || lower.contains("compatibility mode"))
 }
 
 fn emit_stream_event(app_handle: &tauri::AppHandle, stream_id: &str, event: &AssistantStreamEvent) {

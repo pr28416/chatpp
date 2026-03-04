@@ -137,19 +137,6 @@ pub struct AssistantTurnRequest {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
-pub struct AssistantCitation {
-    pub chat_id: i32,
-    pub rowid: i32,
-    pub label: String,
-    pub chat_label: Option<String>,
-    pub sender: Option<String>,
-    pub sender_handle: Option<String>,
-    pub date: Option<String>,
-    pub message_text: Option<String>,
-    pub reason: Option<String>,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
 pub struct AssistantMessageEvidenceRow {
     pub chat_id: i32,
     pub chat_label: Option<String>,
@@ -173,7 +160,6 @@ pub struct AssistantToolTrace {
 pub struct AssistantTurnResponse {
     pub text: String,
     pub duration_ms: Option<u64>,
-    pub citations: Vec<AssistantCitation>,
     pub tool_traces: Vec<AssistantToolTrace>,
 }
 

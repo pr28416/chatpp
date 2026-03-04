@@ -1,7 +1,7 @@
 use crate::db;
 use crate::state::AppState;
 use crate::timeline_db;
-use crate::types::{AssistantCitation, AssistantMessageEvidenceRow, MessageParams, SearchParams};
+use crate::types::{AssistantMessageEvidenceRow, MessageParams, SearchParams};
 use chrono::{DateTime, Local};
 use rusqlite::types::Value as SqlValue;
 use serde_json::{json, Value};
@@ -848,101 +848,6 @@ fn sql_to_json_value(value: SqlValue) -> Value {
             json!(base64::engine::general_purpose::STANDARD.encode(v))
         }
     }
-}
-
-pub fn enrich_citations(
-    state: &AppState,
-    citations: &[AssistantCitation],
-) -> Result<Vec<AssistantCitation>, String> {
-    if citations.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let conn = rusqlite::Connection::open_with_flags(
-        &state.db_path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )
-    .map_err(|e| e.to_string())?;
-
-    let mut stmt = conn
-        .prepare(
-            "SELECT m.text, m.date, m.handle_id, m.is_from_me
-             FROM message m
-             JOIN chat_message_join c ON c.message_id = m.ROWID
-             WHERE c.chat_id = ?1 AND m.ROWID = ?2
-             LIMIT 1",
-        )
-        .map_err(|e| e.to_string())?;
-
-    let mut enriched: Vec<AssistantCitation> = Vec::with_capacity(citations.len());
-    let mut seen: HashSet<(i32, i32)> = HashSet::new();
-    let debug_enabled = assistant_debug_enabled();
-    let mut dropped_missing = 0usize;
-
-    for citation in citations {
-        if !seen.insert((citation.chat_id, citation.rowid)) {
-            continue;
-        }
-        let row = stmt.query_row(rusqlite::params![citation.chat_id, citation.rowid], |row| {
-            Ok((
-                row.get::<_, Option<String>>(0)?,
-                row.get::<_, i64>(1)?,
-                row.get::<_, Option<i32>>(2)?,
-                row.get::<_, i32>(3)?,
-            ))
-        });
-
-        match row {
-            Ok((text, apple_ts, handle_id, is_from_me)) => {
-                let sender_handle = handle_id.and_then(|hid| state.handles.get(&hid)).cloned();
-                let sender = sender_handle
-                    .as_ref()
-                    .map(|raw| {
-                        db::resolve_handle_name(raw, &state.contact_names)
-                            .unwrap_or_else(|| raw.clone())
-                    })
-                    .or_else(|| {
-                        if is_from_me == 1 {
-                            Some("You".to_string())
-                        } else {
-                            None
-                        }
-                    });
-                enriched.push(AssistantCitation {
-                    chat_id: citation.chat_id,
-                    rowid: citation.rowid,
-                    label: citation.label.clone(),
-                    chat_label: chat_label_for(state, citation.chat_id),
-                    sender,
-                    sender_handle,
-                    date: db::apple_timestamp_to_iso(apple_ts),
-                    message_text: text,
-                    reason: citation.reason.clone(),
-                });
-            }
-            Err(rusqlite::Error::QueryReturnedNoRows) => {
-                dropped_missing += 1;
-            }
-            Err(err) => return Err(err.to_string()),
-        }
-    }
-
-    if debug_enabled {
-        eprintln!(
-            "[assistant-debug] citations enrich requested={} enriched={} dropped_missing={}",
-            citations.len(),
-            enriched.len(),
-            dropped_missing
-        );
-    }
-
-    Ok(enriched)
-}
-
-fn assistant_debug_enabled() -> bool {
-    std::env::var("ASSISTANT_DEBUG")
-        .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
-        .unwrap_or(false)
 }
 
 fn chat_label_for(state: &AppState, chat_id: i32) -> Option<String> {

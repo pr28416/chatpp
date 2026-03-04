@@ -4,7 +4,10 @@ import { format, isToday, isYesterday, parseISO } from "date-fns";
 import { MessageCircle } from "lucide-react";
 
 import type { Chat, DateRange, Message, PaginatedMessages } from "@/lib/types";
-import { fetchMessages, startWindowDrag as startWindowDragCommand } from "@/lib/commands";
+import {
+  fetchMessages,
+  startWindowDrag as startWindowDragCommand,
+} from "@/lib/commands";
 import { MessageBubble } from "./message-bubble";
 import { MessageMinimap } from "./message-minimap";
 import { ReplyThreadOverlay } from "./reply-thread-overlay";
@@ -102,6 +105,22 @@ function nextAnimationFrame(): Promise<void> {
   });
 }
 
+function nearestDisplayIndexByRowid(display: Message[], rowid: number): number {
+  if (display.length === 0) {
+    return -1;
+  }
+  let nearestIdx = 0;
+  let nearestDistance = Math.abs(display[0].rowid - rowid);
+  for (let i = 1; i < display.length; i++) {
+    const distance = Math.abs(display[i].rowid - rowid);
+    if (distance < nearestDistance) {
+      nearestDistance = distance;
+      nearestIdx = i;
+    }
+  }
+  return nearestIdx;
+}
+
 export function MessageView({
   chat,
   dateRange,
@@ -192,47 +211,83 @@ export function MessageView({
   const virtualizerRef = React.useRef<any>(null);
 
   const jumpToRowid = React.useCallback(
-    (rowid: number) => {
+    async (rowid: number) => {
       setHighlightedRowid(rowid);
 
-      const idx = displayMessages.findIndex((m) => m.rowid === rowid);
+      const currentDisplay = messagesRef.current.filter((m) => !m.is_tapback);
+      const idx = currentDisplay.findIndex((m) => m.rowid === rowid);
       if (idx >= 0) {
         virtualizerRef.current?.scrollToIndex(idx, { align: "center" });
         return;
       }
 
-      if (!chat) return;
-      const loadId = activeLoadIdRef.current;
+      const activeChat = chatRef.current;
+      if (!activeChat) return;
 
-      fetchMessages(chat.id, {
-        after_rowid: rowid - 1,
-        limit: PAGE_LOAD_LIMIT,
-      }).then((data) => {
-        if (loadId !== activeLoadIdRef.current || data.messages.length === 0) return;
+      const loadId = activeLoadIdRef.current + 1;
+      activeLoadIdRef.current = loadId;
+      busyRef.current = false;
+      setLoading(true);
+      setLoadingDirection("initial");
+      setIsInitialLoadComplete(false);
+
+      try {
+        let data = await fetchMessages(activeChat.id, {
+          after_rowid: rowid - 1,
+          limit: PAGE_LOAD_LIMIT,
+        });
+        if (loadId !== activeLoadIdRef.current) return;
+
+        if (data.messages.length === 0) {
+          data = await fetchMessages(activeChat.id, {
+            limit: INITIAL_LOAD_LIMIT,
+            fast_initial: false,
+          });
+          if (loadId !== activeLoadIdRef.current) return;
+        }
 
         setMessages(data.messages);
-        setHasPrevious(true);
+        messagesRef.current = data.messages;
+        setHasPrevious(data.has_previous);
         setHasMore(data.has_more);
+        hasPreviousRef.current = data.has_previous;
+        hasMoreRef.current = data.has_more;
 
-        setTimeout(() => {
-          if (loadId !== activeLoadIdRef.current) return;
-          const newIdx = data.messages
-            .filter((m) => !m.is_tapback)
-            .findIndex((m) => m.rowid === rowid);
-          if (newIdx >= 0) {
-            virtualizerRef.current?.scrollToIndex(newIdx, { align: "center" });
-          }
-        }, 50);
-      });
+        await nextAnimationFrame();
+        if (loadId !== activeLoadIdRef.current) return;
+        const nextDisplay = data.messages.filter((m) => !m.is_tapback);
+        if (nextDisplay.length === 0) return;
+        const exactIdx = nextDisplay.findIndex((m) => m.rowid === rowid);
+        const targetIdx = exactIdx >= 0 ? exactIdx : nearestDisplayIndexByRowid(nextDisplay, rowid);
+        if (targetIdx >= 0) {
+          virtualizerRef.current?.scrollToIndex(targetIdx, { align: "center" });
+        }
+      } catch (err) {
+        if (loadId !== activeLoadIdRef.current) return;
+        // eslint-disable-next-line no-console
+        console.error("Failed to jump to rowid:", err);
+      } finally {
+        if (loadId !== activeLoadIdRef.current) return;
+        setLoading(false);
+        setLoadingDirection(null);
+        setIsInitialLoadComplete(true);
+      }
     },
-    [chat, displayMessages],
+    [],
   );
 
   React.useEffect(() => {
     if (requestedJumpRowid == null) return;
     if (requestedJumpChatId != null && chat?.id !== requestedJumpChatId) return;
-    jumpToRowid(requestedJumpRowid);
-    onJumpHandled?.(requestedJumpRowid, requestedJumpChatId ?? chat?.id ?? null);
+    let cancelled = false;
+    void (async () => {
+      await jumpToRowid(requestedJumpRowid);
+      if (cancelled) return;
+      onJumpHandled?.(requestedJumpRowid, requestedJumpChatId ?? chat?.id ?? null);
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [chat?.id, jumpToRowid, onJumpHandled, requestedJumpChatId, requestedJumpRowid]);
 
   React.useEffect(() => {
@@ -295,7 +350,7 @@ export function MessageView({
     (
       data: PaginatedMessages,
       hasDateRange: boolean,
-      options: { loadId: number },
+      options: { loadId: number; alignToBottom?: boolean },
     ) => {
       setMessages(data.messages);
       messagesRef.current = data.messages;
@@ -313,7 +368,7 @@ export function MessageView({
         }
       };
 
-      if (!hasDateRange) {
+      if (!hasDateRange && (options.alignToBottom ?? true)) {
         const visibleTargetIndex = data.messages.filter((m) => !m.is_tapback).length - 1;
 
         const alignToBottom = (attempt: number) => {
