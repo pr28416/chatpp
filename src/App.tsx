@@ -73,6 +73,14 @@ function defaultAssistantUiState(): PerChatAssistantUiState {
   };
 }
 
+function compactText(text: string, max: number): string {
+  const normalized = String(text).replace(/\s+/g, " ").trim();
+  if (normalized.length <= max) {
+    return normalized;
+  }
+  return `${normalized.slice(0, max - 1)}…`;
+}
+
 export default function App() {
   const [chats, setChats] = React.useState<Chat[]>([]);
   const [selectedChatId, setSelectedChatId] = React.useState<number | null>(
@@ -369,7 +377,9 @@ export default function App() {
               nextText += payload.text;
             }
             if (payload.kind === "run-error" && payload.text) {
-              nextText = `Error: ${payload.text}`;
+              if (!nextText.trim()) {
+                nextText = `Error: ${payload.text}`;
+              }
             }
             return {
               text: nextText,
@@ -424,15 +434,27 @@ export default function App() {
       });
     } catch (err) {
       const reason = formatUnknownError(err);
+      const missingFinal = reason.includes(
+        "exited before returning a final response",
+      );
+      const detailMatch = reason.match(/Details:\s*(.+)$/i);
+      const detailSuffix = detailMatch?.[1]
+        ? ` ${compactText(detailMatch[1], 220)}`
+        : "";
+      const failureText = missingFinal
+        ? `Assistant stopped before finalizing response.${detailSuffix}`
+        : `Error: ${reason}`;
       updateAssistantMessage(pendingAssistantId, (previous) => ({
-        text: `Failed to generate response: ${reason}`,
+        text: (previous?.text ?? "").trim()
+          ? previous?.text ?? ""
+          : `Failed to generate response: ${reason}`,
         status: "error",
         display_blocks: [
           ...(previous?.display_blocks ?? []),
           {
             id: `${pendingAssistantId}:error:${Date.now()}`,
             kind: "error",
-            text: `Error: ${reason}`,
+            text: failureText,
           },
         ],
       }));

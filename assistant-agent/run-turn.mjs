@@ -48,6 +48,24 @@ const SYSTEM_PROMPT = [
 
 let currentRun = null;
 const pendingToolCalls = new Map();
+let runKeepAlive = null;
+let currentRunId = null;
+
+function startRunKeepAlive() {
+  if (runKeepAlive) {
+    return;
+  }
+  // Keep the event loop alive while a run is active so unresolved async work cannot exit silently.
+  runKeepAlive = setInterval(() => {}, 1000);
+}
+
+function stopRunKeepAlive() {
+  if (!runKeepAlive) {
+    return;
+  }
+  clearInterval(runKeepAlive);
+  runKeepAlive = null;
+}
 const SUPPORTED_MODELS_BY_PROVIDER = {
   openai: new Set(['gpt-5.2', 'gpt-5.2-pro', 'gpt-5-mini', 'gpt-5-nano']),
   anthropic: new Set(['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5']),
@@ -67,6 +85,23 @@ const SUPPORTED_MODELS_BY_PROVIDER = {
 const rl = readline.createInterface({
   input: process.stdin,
   crlfDelay: Infinity,
+});
+
+process.on('beforeExit', (code) => {
+  if (!currentRun) {
+    return;
+  }
+  emit({
+    type: 'error',
+    message: `Sidecar beforeExit(${code}) while run is still active${currentRunId ? ` (run_id=${currentRunId})` : ''}`,
+  });
+});
+
+process.on('unhandledRejection', (reason) => {
+  emit({
+    type: 'error',
+    message: `Unhandled rejection in assistant sidecar: ${compact(String(reason || 'unknown'), 280)}`,
+  });
 });
 
 function debugLog(event, details = {}) {
@@ -123,6 +158,8 @@ rl.on('line', async (line) => {
       emit({ type: 'error', message: err instanceof Error ? err.message : String(err) });
     })
     .finally(() => {
+      currentRunId = null;
+      stopRunKeepAlive();
       currentRun = null;
       rl.close();
     });
@@ -138,6 +175,8 @@ async function runTurn(payload) {
     emitStreamEvent(event);
   };
   const runId = `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  currentRunId = runId;
+  startRunKeepAlive();
   const selectedChatId = isValidChatId(payload.selected_chat_id)
     ? Number(payload.selected_chat_id)
     : null;

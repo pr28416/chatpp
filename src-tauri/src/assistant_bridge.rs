@@ -95,6 +95,9 @@ pub fn run_assistant_turn(
     let mut line = String::new();
     let mut final_seen = false;
     let mut streamed_text = String::new();
+    let mut stream_event_count: usize = 0;
+    let mut tool_call_count: usize = 0;
+    let mut last_stream_event_kind: Option<String> = None;
     let mut tool_workers: Vec<std::thread::JoinHandle<()>> = Vec::new();
     let tool_gate = Arc::new((Mutex::new(0usize), Condvar::new()));
 
@@ -113,6 +116,7 @@ pub fn run_assistant_turn(
         let message_type = payload.get("type").and_then(Value::as_str).unwrap_or("");
         match message_type {
             "tool_call" => {
+                tool_call_count = tool_call_count.saturating_add(1);
                 let id = payload
                     .get("id")
                     .and_then(Value::as_str)
@@ -172,6 +176,7 @@ pub fn run_assistant_turn(
                 tool_workers.push(worker);
             }
             "stream_event" => {
+                stream_event_count = stream_event_count.saturating_add(1);
                 if final_seen {
                     if debug_enabled {
                         eprintln!(
@@ -199,6 +204,7 @@ pub fn run_assistant_turn(
                         streamed_text.push_str(delta);
                     }
                 }
+                last_stream_event_kind = Some(event.kind.clone());
 
                 emit_stream_event(app_handle, &request.stream_id, &event);
             }
@@ -319,23 +325,21 @@ pub fn run_assistant_turn(
         ));
     }
 
-    if !streamed_text.trim().is_empty() {
-        return Ok(AssistantTurnResponse {
-            text: streamed_text.trim().to_string(),
-            duration_ms: None,
-            tool_traces: Vec::new(),
-        });
-    }
-
+    let partial_len = streamed_text.trim().len();
+    let last_kind = last_stream_event_kind.unwrap_or_else(|| "none".to_string());
+    let lifecycle_details = format!(
+        "stream_events={}, last_stream_event={}, tool_calls={}, partial_text_len={}",
+        stream_event_count, last_kind, tool_call_count, partial_len
+    );
     if stderr_tail.is_empty() {
         Err(format!(
-            "Assistant agent exited before returning a final response (status: {})",
-            status
+            "Assistant agent exited before returning a final response (status: {}). Details: {}",
+            status, lifecycle_details
         ))
     } else {
         Err(format!(
-            "Assistant agent exited before returning a final response (status: {}). Details: {}",
-            status, stderr_tail
+            "Assistant agent exited before returning a final response (status: {}). Details: {} | stderr: {}",
+            status, lifecycle_details, stderr_tail
         ))
     }
 }
