@@ -47,6 +47,9 @@ const SYSTEM_PROMPT = [
   "For cross-chat breakdown requests, group by conversation and keep chronology within each conversation.",
 ].join(" ");
 
+const CITATION_FORMAT_REINFORCEMENT =
+  "Any citations in the final answer must be formatted as cite:<chat_id>:<rowid>. Do not output rowid:... tokens.";
+
 let currentRun = null;
 const pendingToolCalls = new Map();
 let runKeepAlive = null;
@@ -409,6 +412,73 @@ async function runTurn(payload) {
     }
   };
 
+  const runCitationFormatGuard = async () => {
+    const runGuardAttempt = async (attempt) => {
+      const startedAt = Date.now();
+      emitRuntimeEvent({
+        kind: "tool-start",
+        at_ms: nowMs(),
+        run_id: runId,
+        pass_index: activePass?.pass_index ?? null,
+        pass_kind: activePass?.pass_kind ?? null,
+        stream_text_enabled: activePass?.stream_text_enabled ?? null,
+        tool_call_id: `citation-format-guard-${attempt}`,
+        tool_name: "citation_format_guard",
+        input_preview: '{"reason":"pre-stream-finalization"}',
+        input_summary: "Reinforcing canonical citation token format",
+      });
+      const output = { instruction: CITATION_FORMAT_REINFORCEMENT };
+      toolTraceLog.push({
+        tool_name: "citation_format_guard",
+        input: safeStringify({
+          reason: "pre-stream-finalization",
+          attempt,
+        }),
+        output: safeStringify(output),
+      });
+      emitRuntimeEvent({
+        kind: "tool-finish",
+        at_ms: nowMs(),
+        run_id: runId,
+        pass_index: activePass?.pass_index ?? null,
+        pass_kind: activePass?.pass_kind ?? null,
+        stream_text_enabled: activePass?.stream_text_enabled ?? null,
+        tool_call_id: `citation-format-guard-${attempt}`,
+        tool_name: "citation_format_guard",
+        success: true,
+        duration_ms: Date.now() - startedAt,
+        output_preview: compact(safeStringify(output), 220),
+        output_summary: "Citation format reminder prepared",
+      });
+      return output.instruction;
+    };
+
+    try {
+      return await runGuardAttempt(1);
+    } catch (err) {
+      debugLog("citation-format-guard-retry", {
+        run_id: runId,
+        reason: err instanceof Error ? err.message : String(err),
+      });
+      try {
+        return await runGuardAttempt(2);
+      } catch (retryErr) {
+        emitRuntimeEvent({
+          kind: "citation-warning",
+          at_ms: nowMs(),
+          run_id: runId,
+          text: "Citation format guard failed twice; continuing without guard",
+        });
+        debugLog("citation-format-guard-failed", {
+          run_id: runId,
+          reason:
+            retryErr instanceof Error ? retryErr.message : String(retryErr),
+        });
+        return "";
+      }
+    }
+  };
+
   if (shouldPrefetchRecentMessages(userMessage, scopedChatIds)) {
     try {
       const prefetched = await bridgeTool("get_recent_messages", {
@@ -747,10 +817,14 @@ async function runTurn(payload) {
     }
   };
 
+  const enforceCitationFormatGuard = shouldRunCitationFormatGuard(
+    userMessage,
+    scopedChatIds,
+  );
   let finalText = await runAgentPass(prompt, {
-    streamTextDeltas: true,
-    streamReasoningDeltas: true,
-    passKind: "primary",
+    streamTextDeltas: !enforceCitationFormatGuard,
+    streamReasoningDeltas: !enforceCitationFormatGuard,
+    passKind: enforceCitationFormatGuard ? "primary-prestream" : "primary",
   });
 
   if (toolTraceLog.length === 0) {
@@ -812,6 +886,25 @@ async function runTurn(payload) {
       kind: "policy-fallback-finish",
       at_ms: nowMs(),
       text: "Context-stitch refinement complete.",
+    });
+  }
+
+  if (enforceCitationFormatGuard) {
+    const guardInstruction = await runCitationFormatGuard();
+    const finalizationPrompt = [
+      prompt,
+      `Draft answer to finalize:\n${finalText}`,
+      guardInstruction
+        ? `Citation format guard output: ${guardInstruction}`
+        : "",
+      "Produce the final answer for the user. Keep any citations canonical as cite:<chat_id>:<rowid>.",
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+    finalText = await runAgentPass(finalizationPrompt, {
+      streamTextDeltas: true,
+      streamReasoningDeltas: true,
+      passKind: "citation-format-finalization",
     });
   }
 
@@ -1265,6 +1358,25 @@ function shouldRunInvestigationPrelude(userMessage, scopedChatIds) {
     return false;
   }
   return /\b(who|what|when|where|why|how|find|search|look up|check|tell me|does|did|is|are)\b/.test(
+    normalized,
+  );
+}
+
+function shouldRunCitationFormatGuard(userMessage, scopedChatIds) {
+  const normalized = normalizeConversationToken(String(userMessage || ""));
+  if (!normalized) {
+    return false;
+  }
+  const asksForArchiveFacts = /\b(who|what|when|where|why|how|find|search|look up|check|tell me|does|did|is|are|last|latest|recent|show|list)\b/.test(
+    normalized,
+  );
+  if (!asksForArchiveFacts) {
+    return false;
+  }
+  if (Array.isArray(scopedChatIds) && scopedChatIds.length > 0) {
+    return true;
+  }
+  return /\b(message|messages|chat|chats|conversation|archive|timeline|texts|sql|rowid|sender|contact)\b/.test(
     normalized,
   );
 }
