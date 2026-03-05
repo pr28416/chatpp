@@ -833,6 +833,10 @@ const AssistantMessageItem = React.memo(function AssistantMessageItem({
         .map((citation) => [citation.rowid, citation]),
     );
   }, [citationsForLookup]);
+  const showCitationGroups =
+    message.role === "assistant" &&
+    message.status !== "streaming" &&
+    citationsForLookup.length > 0;
 
   return (
     <div className="text-sm">
@@ -866,7 +870,7 @@ const AssistantMessageItem = React.memo(function AssistantMessageItem({
         </div>
       )}
 
-      {citationsForLookup.length > 0 ? (
+      {showCitationGroups ? (
         <CitationGroups
           citations={citationsForLookup}
           chats={chats}

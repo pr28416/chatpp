@@ -810,11 +810,19 @@ async function runTurn(payload) {
   });
 
   finalized = true;
+  debugLog('final-emit-start', {
+    run_id: runId,
+    final_text_len: finalText.trim().length,
+    tool_trace_count: toolTraceLog.length,
+  });
   emit({
     type: 'final',
     text: finalText.trim(),
     tool_traces: toolTraceLog,
     duration_ms: durationMs,
+  });
+  debugLog('final-emit-complete', {
+    run_id: runId,
   });
 }
 
@@ -2296,6 +2304,10 @@ function emit(payload) {
   try {
     writeSync(1, line);
   } catch {
+    debugLog('stdout-write-fallback', {
+      payload_type: payload?.type ?? null,
+      line_len: line.length,
+    });
     process.stdout.write(line);
   }
 }

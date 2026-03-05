@@ -98,6 +98,7 @@ pub fn run_assistant_turn(
     let mut stream_event_count: usize = 0;
     let mut tool_call_count: usize = 0;
     let mut last_stream_event_kind: Option<String> = None;
+    let mut last_run_finish_duration_ms: Option<u64> = None;
     let mut tool_workers: Vec<std::thread::JoinHandle<()>> = Vec::new();
     let tool_gate = Arc::new((Mutex::new(0usize), Condvar::new()));
 
@@ -203,6 +204,9 @@ pub fn run_assistant_turn(
                     if let Some(delta) = &event.text {
                         streamed_text.push_str(delta);
                     }
+                }
+                if event.kind == "run-finish" {
+                    last_run_finish_duration_ms = event.duration_ms;
                 }
                 last_stream_event_kind = Some(event.kind.clone());
 
@@ -327,6 +331,19 @@ pub fn run_assistant_turn(
 
     let partial_len = streamed_text.trim().len();
     let last_kind = last_stream_event_kind.unwrap_or_else(|| "none".to_string());
+    if status.success() && last_kind == "run-finish" && partial_len > 0 {
+        if debug_enabled {
+            eprintln!(
+                "[assistant-debug] bridge final fallback stream_id={} text_len={} tool_calls={}",
+                request.stream_id, partial_len, tool_call_count
+            );
+        }
+        return Ok(AssistantTurnResponse {
+            text: streamed_text.trim().to_string(),
+            duration_ms: last_run_finish_duration_ms,
+            tool_traces: Vec::new(),
+        });
+    }
     let lifecycle_details = format!(
         "stream_events={}, last_stream_event={}, tool_calls={}, partial_text_len={}",
         stream_event_count, last_kind, tool_call_count, partial_len
