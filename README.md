@@ -62,6 +62,8 @@ npm run dev
 npm run tauri:dev
 ```
 
+`tauri:dev` automatically picks an open local frontend port so multiple worktrees can run in parallel. To pin a specific port for a run, set `TAURI_DEV_PORT` (example: `TAURI_DEV_PORT=1520 npm run tauri:dev`).
+
 ## Build
 
 ```bash
@@ -132,4 +134,4 @@ example/        # Separate UI playground/example app
 
 - Main product name in Tauri config: `Chat++`
 - Bundle identifier: `com.imessage-search.desktop`
-- Dev frontend runs on `http://localhost:1420`
+- Dev frontend defaults to `http://localhost:1420` and auto-falls forward to the next open port in `tauri:dev`.
