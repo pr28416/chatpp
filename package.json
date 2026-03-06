@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "tauri:dev": "CI=false npx tauri dev",
+    "tauri:dev": "CI=false node scripts/tauri-dev.mjs",
     "tauri:build": "CI=false npx tauri build --bundles app"
   },
   "dependencies": {
