@@ -80,15 +80,15 @@ export const ASSISTANT_MODEL_OPTIONS: AssistantModelOption[] = [
     requiredEnvVar: "GOOGLE_GENERATIVE_AI_API_KEY",
   },
   {
-    id: "grok-4-latest",
-    label: "Grok 4 (Latest)",
+    id: "grok-4-1-fast-reasoning",
+    label: "Grok 4.1 Fast Reasoning",
     provider: "xai",
     providerLabel: "xAI",
     requiredEnvVar: "XAI_API_KEY",
   },
   {
-    id: "grok-4-0709",
-    label: "Grok 4",
+    id: "grok-4-1-fast-non-reasoning",
+    label: "Grok 4.1 Fast Non-Reasoning",
     provider: "xai",
     providerLabel: "xAI",
     requiredEnvVar: "XAI_API_KEY",
@@ -111,10 +111,14 @@ export const ASSISTANT_MODEL_OPTIONS: AssistantModelOption[] = [
 
 export const DEFAULT_ASSISTANT_MODEL_ID = "gpt-5.2";
 
-export function getAssistantModelOption(modelId: string): AssistantModelOption | null {
+export function getAssistantModelOption(
+  modelId: string,
+): AssistantModelOption | null {
   return ASSISTANT_MODEL_OPTIONS.find((model) => model.id === modelId) ?? null;
 }
 
-export function getMissingProviderKeyMessage(model: AssistantModelOption): string {
+export function getMissingProviderKeyMessage(
+  model: AssistantModelOption,
+): string {
   return `${model.providerLabel} requires ${model.requiredEnvVar} in your environment.`;
 }
