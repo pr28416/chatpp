@@ -5,7 +5,8 @@ use crate::types::{AssistantMessageEvidenceRow, MessageParams, SearchParams};
 use chrono::{DateTime, Local};
 use rusqlite::types::Value as SqlValue;
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use std::cmp::Ordering;
+use std::collections::{HashMap, HashSet};
 
 const SQL_DEFAULT_LIMIT: usize = 200;
 const SQL_MAX_LIMIT: usize = 500;
@@ -148,12 +149,12 @@ fn tool_get_recent_messages(state: &AppState, args: Value) -> Result<Value, Stri
     }
 
     Ok(json!({
-        "chat_id": chat_id,
-        "results": results,
-        "total": results.len(),
-        "scan_limit": scan_limit,
-        "offset": offset,
-        }))
+    "chat_id": chat_id,
+    "results": results,
+    "total": results.len(),
+    "scan_limit": scan_limit,
+    "offset": offset,
+    }))
 }
 
 fn tool_search_all_chats(state: &AppState, args: Value) -> Result<Value, String> {
@@ -189,7 +190,10 @@ fn tool_search_all_chats(state: &AppState, args: Value) -> Result<Value, String>
         .map_err(|e| e.to_string())?;
 
     let mut rows = stmt
-        .query(rusqlite::params![format!("%{}%", q), i64::try_from(limit).unwrap_or(120)])
+        .query(rusqlite::params![
+            format!("%{}%", q),
+            i64::try_from(limit).unwrap_or(120)
+        ])
         .map_err(|e| e.to_string())?;
 
     let mut data_rows: Vec<Vec<Value>> = Vec::new();
@@ -223,8 +227,14 @@ fn tool_search_contacts(state: &AppState, args: Value) -> Result<Value, String> 
         .map(|v| (v as usize).clamp(1, 50))
         .unwrap_or(12);
     let needle = normalize_contact_token(&q);
+    let conn = rusqlite::Connection::open_with_flags(
+        &state.db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .map_err(|e| e.to_string())?;
+    let latest_rowid_by_chat = latest_rowid_by_chat_id(&conn)?;
 
-    let mut scored: Vec<(i32, Value)> = Vec::new();
+    let mut scored: Vec<(i32, i32, String, String, Value)> = Vec::new();
     for (handle, display_name) in &state.contact_names {
         let handle_norm = normalize_contact_token(handle);
         let name_norm = normalize_contact_token(display_name);
@@ -232,9 +242,19 @@ fn tool_search_contacts(state: &AppState, args: Value) -> Result<Value, String> 
         if score <= 0 {
             continue;
         }
-        let chat_ids = matching_chat_ids_for_contact(state, display_name, handle, 24);
+        let chat_ids =
+            matching_chat_ids_for_contact(state, display_name, handle, 24, &latest_rowid_by_chat);
+        let latest_chat_rowid = chat_ids
+            .iter()
+            .filter_map(|chat_id| latest_rowid_by_chat.get(chat_id))
+            .copied()
+            .max()
+            .unwrap_or(0);
         scored.push((
             score,
+            latest_chat_rowid,
+            display_name.clone(),
+            handle.clone(),
             json!({
                 "display_name": display_name,
                 "handle": handle,
@@ -243,8 +263,17 @@ fn tool_search_contacts(state: &AppState, args: Value) -> Result<Value, String> 
             }),
         ));
     }
-    scored.sort_by(|a, b| b.0.cmp(&a.0));
-    let results: Vec<Value> = scored.into_iter().take(limit).map(|(_, row)| row).collect();
+    scored.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| b.1.cmp(&a.1))
+            .then_with(|| a.2.cmp(&b.2))
+            .then_with(|| a.3.cmp(&b.3))
+    });
+    let results: Vec<Value> = scored
+        .into_iter()
+        .take(limit)
+        .map(|(_, _, _, _, row)| row)
+        .collect();
     Ok(json!({
         "query": q,
         "results": results,
@@ -265,7 +294,13 @@ fn tool_find_chats_by_contact(state: &AppState, args: Value) -> Result<Value, St
         .and_then(Value::as_u64)
         .map(|v| (v as usize).clamp(1, 80))
         .unwrap_or(24);
-    let ids = matching_chat_ids_for_contact(state, &q, &q, limit);
+    let conn = rusqlite::Connection::open_with_flags(
+        &state.db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .map_err(|e| e.to_string())?;
+    let latest_rowid_by_chat = latest_rowid_by_chat_id(&conn)?;
+    let ids = matching_chat_ids_for_contact(state, &q, &q, limit, &latest_rowid_by_chat);
     let results: Vec<Value> = ids
         .into_iter()
         .map(|chat_id| {
@@ -313,7 +348,13 @@ fn tool_search_messages_by_contact(state: &AppState, args: Value) -> Result<Valu
         .and_then(Value::as_u64)
         .map(|v| (v as usize).clamp(1, 240))
         .unwrap_or(120);
-    let chat_ids = matching_chat_ids_for_contact(state, &q, &q, 80);
+    let conn = rusqlite::Connection::open_with_flags(
+        &state.db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .map_err(|e| e.to_string())?;
+    let latest_rowid_by_chat = latest_rowid_by_chat_id(&conn)?;
+    let chat_ids = matching_chat_ids_for_contact(state, &q, &q, 80, &latest_rowid_by_chat);
     if chat_ids.is_empty() {
         return Ok(json!({
             "query": q,
@@ -351,11 +392,6 @@ fn tool_search_messages_by_contact(state: &AppState, args: Value) -> Result<Valu
         )
     };
 
-    let conn = rusqlite::Connection::open_with_flags(
-        &state.db_path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )
-    .map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let mut params: Vec<SqlValue> = chat_ids
         .iter()
@@ -452,7 +488,11 @@ fn tool_search_timeline(state: &AppState, args: Value) -> Result<Value, String> 
     for level in [2_u8, 1_u8, 0_u8] {
         let list =
             timeline_db::get_nodes(&conn, chat_id, level, None).map_err(|e| e.to_string())?;
-        for node in list.nodes {
+        let mut nodes = list.nodes;
+        nodes.sort_by(|a, b| {
+            compare_timeline_node_newest_first(a.end_rowid, a.id, b.end_rowid, b.id)
+        });
+        for node in nodes {
             let haystack = format!(
                 "{} {}",
                 node.title.to_lowercase(),
@@ -583,10 +623,9 @@ fn normalize_sql_rows_to_messages(
     .ok_or_else(|| {
         "SQL result cannot be normalized: include message row id as `rowid` (or message_id/message_rowid)".to_string()
     })?;
-    let chat_id_idx =
-        find_column_index(column_names, &["chat_id", "chatId"]).ok_or_else(|| {
-            "SQL result cannot be normalized: include conversation id as `chat_id`".to_string()
-        })?;
+    let chat_id_idx = find_column_index(column_names, &["chat_id", "chatId"]).ok_or_else(|| {
+        "SQL result cannot be normalized: include conversation id as `chat_id`".to_string()
+    })?;
 
     let mut keys: Vec<(i32, i32)> = Vec::new();
     let mut seen = HashSet::new();
@@ -631,18 +670,18 @@ fn normalize_sql_rows_to_messages(
     }
 
     if out.is_empty() && !allow_empty {
-        return Err("SQL result did not map to any valid messages in the selected chats".to_string());
+        return Err(
+            "SQL result did not map to any valid messages in the selected chats".to_string(),
+        );
     }
 
     Ok(out)
 }
 
 fn find_column_index(column_names: &[String], aliases: &[&str]) -> Option<usize> {
-    column_names.iter().position(|col| {
-        aliases
-            .iter()
-            .any(|alias| col.eq_ignore_ascii_case(alias))
-    })
+    column_names
+        .iter()
+        .position(|col| aliases.iter().any(|alias| col.eq_ignore_ascii_case(alias)))
 }
 
 fn value_to_i32(value: &Value) -> Option<i32> {
@@ -781,10 +820,11 @@ fn matching_chat_ids_for_contact(
     display_name: &str,
     handle: &str,
     limit: usize,
+    latest_rowid_by_chat: &HashMap<i32, i32>,
 ) -> Vec<i32> {
     let name_norm = normalize_contact_token(display_name);
     let handle_norm = normalize_contact_token(handle);
-    let mut scored: Vec<(i32, i32)> = Vec::new();
+    let mut scored: Vec<(i32, i32, i32)> = Vec::new();
     for (chat_id, participants) in &state.chat_participants {
         let mut best = 0_i32;
         for (participant_name, participant_handle) in participants {
@@ -802,15 +842,58 @@ fn matching_chat_ids_for_contact(
             ));
         }
         if best > 0 {
-            scored.push((best, *chat_id));
+            let latest_rowid = latest_rowid_by_chat.get(chat_id).copied().unwrap_or(0);
+            scored.push((best, latest_rowid, *chat_id));
         }
     }
-    scored.sort_by(|a, b| b.0.cmp(&a.0));
+    scored.sort_by(|a, b| compare_chat_match(a.0, a.1, a.2, b.0, b.1, b.2));
     scored
         .into_iter()
         .take(limit)
-        .map(|(_, chat_id)| chat_id)
+        .map(|(_, _, chat_id)| chat_id)
         .collect()
+}
+
+fn latest_rowid_by_chat_id(conn: &rusqlite::Connection) -> Result<HashMap<i32, i32>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT c.chat_id, MAX(m.ROWID) AS latest_rowid
+             FROM chat_message_join c
+             JOIN message m ON m.ROWID = c.message_id
+             GROUP BY c.chat_id",
+        )
+        .map_err(|e| e.to_string())?;
+    let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
+    let mut out = HashMap::new();
+    while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+        let chat_id: i32 = row.get(0).map_err(|e| e.to_string())?;
+        let latest_rowid: i32 = row.get(1).map_err(|e| e.to_string())?;
+        out.insert(chat_id, latest_rowid);
+    }
+    Ok(out)
+}
+
+fn compare_chat_match(
+    score_a: i32,
+    latest_rowid_a: i32,
+    chat_id_a: i32,
+    score_b: i32,
+    latest_rowid_b: i32,
+    chat_id_b: i32,
+) -> Ordering {
+    score_b
+        .cmp(&score_a)
+        .then_with(|| latest_rowid_b.cmp(&latest_rowid_a))
+        .then_with(|| chat_id_a.cmp(&chat_id_b))
+}
+
+fn compare_timeline_node_newest_first(
+    end_rowid_a: i32,
+    id_a: i64,
+    end_rowid_b: i32,
+    id_b: i64,
+) -> Ordering {
+    end_rowid_b.cmp(&end_rowid_a).then_with(|| id_b.cmp(&id_a))
 }
 
 fn as_i32(value: Option<&Value>) -> Option<i32> {
@@ -866,4 +949,59 @@ fn chat_label_for(state: &AppState, chat_id: i32) -> Option<String> {
                 Some(joined)
             }
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn compare_chat_match_prioritizes_score_before_recency() {
+        let ordering = compare_chat_match(90, 10, 1, 80, 999, 2);
+        assert_eq!(ordering, Ordering::Less);
+    }
+
+    #[test]
+    fn compare_chat_match_uses_recency_on_score_tie() {
+        let ordering = compare_chat_match(80, 200, 1, 80, 100, 2);
+        assert_eq!(ordering, Ordering::Less);
+    }
+
+    #[test]
+    fn compare_timeline_node_newest_first_prefers_larger_end_rowid() {
+        let ordering = compare_timeline_node_newest_first(200, 1, 100, 99);
+        assert_eq!(ordering, Ordering::Less);
+    }
+
+    #[test]
+    fn matching_chat_ids_for_contact_uses_recency_tiebreak() {
+        let mut participants = HashMap::new();
+        participants.insert(
+            1,
+            vec![("Alex Doe".to_string(), "+15550000001".to_string())],
+        );
+        participants.insert(
+            2,
+            vec![("Alex Doe".to_string(), "+15550000002".to_string())],
+        );
+        let state = AppState {
+            db_path: PathBuf::from(""),
+            timeline_db_path: PathBuf::from(""),
+            handles: HashMap::new(),
+            chat_participants: participants,
+            contact_names: HashMap::new(),
+            contact_photos: HashMap::new(),
+            running_timeline_jobs: Arc::new(Mutex::new(HashSet::new())),
+            cancel_timeline_jobs: Arc::new(Mutex::new(HashSet::new())),
+        };
+
+        let mut latest = HashMap::new();
+        latest.insert(1, 10);
+        latest.insert(2, 20);
+
+        let chat_ids = matching_chat_ids_for_contact(&state, "Alex", "Alex", 10, &latest);
+        assert_eq!(chat_ids, vec![2, 1]);
+    }
 }

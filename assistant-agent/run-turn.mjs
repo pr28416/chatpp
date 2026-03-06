@@ -11,7 +11,7 @@ const DEBUG_ENABLED = ["1", "true", "yes", "on"].includes(
   String(process.env.ASSISTANT_DEBUG || "").toLowerCase(),
 );
 
-const SYSTEM_PROMPT = [
+const SYSTEM_PROMPT_BASE_LINES = [
   "You are an investigative assistant for a local iMessage archive.",
   "Always use tools for factual claims about messages/timeline/SQL data.",
   "If at least one conversation is in scope and the user asks for message/timeline facts, you must call at least one tool before the final answer.",
@@ -45,7 +45,26 @@ const SYSTEM_PROMPT = [
   "Prefer human-readable dates and avoid raw database/internal identifiers in prose.",
   "Be concise by default. If the user asks for all instances, provide complete coverage with a summary first, then grouped details.",
   "For cross-chat breakdown requests, group by conversation and keep chronology within each conversation.",
-].join(" ");
+];
+
+function formatLocalCalendarDate(now) {
+  return new Intl.DateTimeFormat(undefined, {
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  }).format(now);
+}
+
+function buildSystemPrompt(now = new Date()) {
+  const localDate = formatLocalCalendarDate(now);
+  const utcTimestamp = now.toISOString();
+  return [
+    `Today is ${localDate} in the local timezone.`,
+    `Current UTC timestamp: ${utcTimestamp}.`,
+    ...SYSTEM_PROMPT_BASE_LINES,
+  ].join(" ");
+}
 
 const CITATION_FORMAT_REINFORCEMENT =
   "Any citations in the final answer must be formatted as cite:<chat_id>:<rowid>. Do not output rowid:... tokens.";
@@ -585,7 +604,7 @@ async function runTurn(payload) {
 
   const agent = new ToolLoopAgent({
     model: buildModel(modelProvider, modelId),
-    instructions: SYSTEM_PROMPT,
+    instructions: buildSystemPrompt(),
     stopWhen: stepCountIs(16),
     tools: {
       search_messages: tool({

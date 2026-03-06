@@ -1165,7 +1165,7 @@ pub fn search_messages(
          FROM message AS m
          LEFT JOIN chat_message_join AS c ON m.ROWID = c.message_id
          WHERE {where_clause}
-         ORDER BY m.ROWID ASC
+         ORDER BY m.ROWID DESC
          LIMIT {limit}"
     );
 
@@ -1365,5 +1365,58 @@ mod tests {
         let (preview, kind) = derive_chat_preview(&conn, &empty);
         assert_eq!(kind, "none");
         assert_eq!(preview, None);
+    }
+
+    #[test]
+    fn search_messages_returns_newest_first() {
+        let conn = Connection::open_in_memory().expect("in-memory sqlite");
+        conn.execute_batch(
+            "
+            CREATE TABLE message (
+              guid TEXT NOT NULL,
+              text TEXT,
+              is_from_me INTEGER NOT NULL,
+              date INTEGER NOT NULL,
+              handle_id INTEGER,
+              associated_message_type INTEGER
+            );
+            CREATE TABLE chat_message_join (
+              chat_id INTEGER NOT NULL,
+              message_id INTEGER NOT NULL
+            );
+            ",
+        )
+        .expect("schema");
+
+        for idx in 1..=3 {
+            conn.execute(
+                "INSERT INTO message (guid, text, is_from_me, date, handle_id, associated_message_type)
+                 VALUES (?1, ?2, 0, ?3, 1, 0)",
+                rusqlite::params![format!("guid-{}", idx), "hello world", idx as i64],
+            )
+            .expect("insert message");
+            conn.execute(
+                "INSERT INTO chat_message_join (chat_id, message_id) VALUES (1, ?1)",
+                rusqlite::params![idx],
+            )
+            .expect("insert join");
+        }
+
+        let mut handles = HashMap::new();
+        handles.insert(1, "+15555550123".to_string());
+        let contact_names: HashMap<String, String> = HashMap::new();
+
+        let params = SearchParams {
+            q: "hello".to_string(),
+            start: None,
+            end: None,
+            limit: Some(10),
+        };
+
+        let response =
+            search_messages(&conn, 1, &params, &handles, &contact_names).expect("search works");
+
+        let rowids: Vec<i32> = response.results.into_iter().map(|r| r.rowid).collect();
+        assert_eq!(rowids, vec![3, 2, 1]);
     }
 }
