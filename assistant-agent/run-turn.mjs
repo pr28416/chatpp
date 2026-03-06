@@ -817,10 +817,7 @@ async function runTurn(payload) {
     }
   };
 
-  const enforceCitationFormatGuard = shouldRunCitationFormatGuard(
-    userMessage,
-    scopedChatIds,
-  );
+  const enforceCitationFormatGuard = true;
   let finalText = await runAgentPass(prompt, {
     streamTextDeltas: !enforceCitationFormatGuard,
     streamReasoningDeltas: !enforceCitationFormatGuard,
