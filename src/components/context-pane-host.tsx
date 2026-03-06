@@ -27,7 +27,7 @@ interface ContextPaneHostProps {
   scopeAll: boolean;
   onScopeAllChange: (value: boolean) => void;
   onJumpToRowid: (rowid: number) => void;
-  onJumpToCitation: (chatId: number | null, rowid: number) => void;
+  onJumpToCitation: (chatId: number | null, rowid?: number | null) => void;
   onSearchResultsChange: (results: SearchResult[]) => void;
   onActiveResultChange: (rowid: number | null) => void;
   assistantDraft: string;

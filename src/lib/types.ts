@@ -134,6 +134,13 @@ export interface AssistantDisplayBlock {
   text?: string;
   tool_name?: string;
   tool_call_id?: string;
+  tool_status?: "running" | "success" | "error";
+  tool_input_preview?: string;
+  tool_output_preview?: string;
+  tool_input_summary?: string;
+  tool_output_summary?: string;
+  tool_started_at_ms?: number;
+  tool_finished_at_ms?: number;
   success?: boolean;
   duration_ms?: number;
 }

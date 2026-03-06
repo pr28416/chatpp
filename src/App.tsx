@@ -494,11 +494,13 @@ export default function App() {
   );
 
   const handleAssistantCitationJump = React.useCallback(
-    (chatId: number | null, rowid: number) => {
+    (chatId: number | null, rowid?: number | null) => {
       if (chatId != null && chatId !== selectedChatId) {
         setSelectedChatId(chatId);
       }
-      requestJump(rowid, chatId ?? selectedChatId ?? null);
+      if (typeof rowid === "number" && Number.isFinite(rowid)) {
+        requestJump(rowid, chatId ?? selectedChatId ?? null);
+      }
     },
     [requestJump, selectedChatId],
   );
