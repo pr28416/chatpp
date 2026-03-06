@@ -34,7 +34,7 @@ interface WorkspaceShellProps {
   requestedJumpChatId: number | null;
   onJumpHandled: (rowid: number, chatId: number | null) => void;
   onJumpToRowid: (rowid: number) => void;
-  onJumpToCitation: (chatId: number | null, rowid: number) => void;
+  onJumpToCitation: (chatId: number | null, rowid?: number | null) => void;
   onHighlightChange: (rowid: number | null) => void;
   assistantDraft: string;
   assistantSelectedModelId: string;

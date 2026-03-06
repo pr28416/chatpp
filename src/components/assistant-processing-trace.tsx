@@ -1,9 +1,13 @@
 import * as React from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Brain, ChevronDown, Sparkles, Wrench } from "lucide-react";
+import { Brain, ChevronDown, Sparkles } from "lucide-react";
 
+import {
+  AssistantToolCallPopover,
+  renderToolStatusIcon,
+} from "@/components/assistant-tool-call-popover";
 import { formatToolFinishLabel, formatToolStartLabel } from "@/lib/assistant-tool-status";
-import type { AssistantProcessingEvent } from "@/lib/types";
+import type { AssistantDisplayBlock, AssistantProcessingEvent } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 interface AssistantProcessingTraceProps {
@@ -66,26 +70,68 @@ export function AssistantProcessingTrace({
             className="mt-2 space-y-1.5 overflow-hidden"
           >
             {visible.map((entry, idx) => {
-              const opacity = streaming ? [0.45, 0.72, 1][Math.max(0, idx - (visible.length - 3))] ?? 1 : 1;
-              return (
+              const opacity =
+                streaming
+                  ? [0.45, 0.72, 1][Math.max(0, idx - (visible.length - 3))] ?? 1
+                  : 1;
+              const row = (
                 <motion.div
                   key={`${entry.id}-${idx}`}
                   initial={{ opacity: 0, y: 4 }}
                   animate={{ opacity, y: 0 }}
                   transition={{ duration: 0.18 }}
-                  className="flex items-start gap-2 text-xs"
+                  className={cn(
+                    "flex items-start gap-2 text-xs",
+                    entry.tool?.tool_status === "error" && "opacity-70",
+                  )}
                 >
                   <span className="mt-0.5 text-muted-foreground">
                     {entry.icon === "tool" ? (
-                      <Wrench className="h-3 w-3" />
+                      renderToolStatusIcon(entry.tool?.tool_status)
                     ) : entry.icon === "reasoning" ? (
                       <Brain className="h-3 w-3" />
                     ) : (
                       <Sparkles className="h-3 w-3" />
                     )}
                   </span>
-                  <span className="min-w-0 text-muted-foreground">{entry.label}</span>
+                  <span className="min-w-0 text-muted-foreground">
+                    {entry.label}
+                    {entry.icon === "tool" &&
+                    entry.tool?.tool_status !== "running" &&
+                    entry.tool?.duration_ms ? (
+                      <> ({formatDuration(entry.tool.duration_ms)})</>
+                    ) : null}
+                  </span>
                 </motion.div>
+              );
+              if (entry.icon !== "tool" || !entry.tool) {
+                return row;
+              }
+              const block: AssistantDisplayBlock = {
+                id: entry.id,
+                kind: "tool_call",
+                text: entry.label,
+                tool_call_id: entry.tool.tool_call_id,
+                tool_name: entry.tool.tool_name,
+                tool_status: entry.tool.tool_status,
+                duration_ms: entry.tool.duration_ms,
+                tool_input_preview: entry.tool.input_preview,
+                tool_output_preview: entry.tool.output_preview,
+                tool_input_summary: entry.tool.input_summary,
+                tool_output_summary: entry.tool.output_summary,
+                success: entry.tool.success,
+              };
+              return (
+                <AssistantToolCallPopover
+                  key={`${entry.id}-${idx}`}
+                  block={block}
+                  chatById={new Map()}
+                  onJumpToCitation={() => {}}
+                >
+                  <button type="button" className="w-full text-left">
+                    {row}
+                  </button>
+                </AssistantToolCallPopover>
               );
             })}
           </motion.div>
@@ -99,6 +145,17 @@ interface TraceEntry {
   id: string;
   icon: "tool" | "reasoning" | "response";
   label: string;
+  tool?: {
+    tool_call_id?: string;
+    tool_name?: string;
+    tool_status: "running" | "success" | "error";
+    duration_ms?: number;
+    input_preview?: string;
+    output_preview?: string;
+    input_summary?: string;
+    output_summary?: string;
+    success?: boolean;
+  };
 }
 
 function buildTraceEntries(events: AssistantProcessingEvent[]): TraceEntry[] {
@@ -115,16 +172,52 @@ function buildTraceEntries(events: AssistantProcessingEvent[]): TraceEntry[] {
         id: `tool-start-${event.tool_call_id ?? event.at_ms}`,
         icon: "tool",
         label: formatToolStartLabel(event),
+        tool: {
+          tool_call_id: event.tool_call_id,
+          tool_name: event.tool_name,
+          tool_status: "running",
+          input_preview: event.input_preview,
+          input_summary: event.input_summary,
+        },
       });
       continue;
     }
 
     if (event.kind === "tool-finish") {
-      entries.push({
-        id: `tool-finish-${event.tool_call_id ?? event.at_ms}`,
-        icon: "tool",
-        label: `${formatToolFinishLabel(event)}${event.duration_ms ? ` (${formatDuration(event.duration_ms)})` : ""}`,
-      });
+      const index = findToolEntryIndex(entries, event.tool_call_id);
+      if (index >= 0) {
+        const current = entries[index];
+        entries[index] = {
+          ...current,
+          id: `tool-${event.tool_call_id ?? event.at_ms}`,
+          label: current.label,
+          tool: {
+            ...current.tool,
+            tool_call_id: event.tool_call_id ?? current.tool?.tool_call_id,
+            tool_name: event.tool_name ?? current.tool?.tool_name,
+            tool_status: event.success === false ? "error" : "success",
+            duration_ms: event.duration_ms,
+            output_preview: event.output_preview,
+            output_summary: event.output_summary,
+            success: event.success,
+          },
+        };
+      } else {
+        entries.push({
+          id: `tool-finish-${event.tool_call_id ?? event.at_ms}`,
+          icon: "tool",
+          label: formatToolFinishLabel(event),
+          tool: {
+            tool_call_id: event.tool_call_id,
+            tool_name: event.tool_name,
+            tool_status: event.success === false ? "error" : "success",
+            duration_ms: event.duration_ms,
+            output_preview: event.output_preview,
+            output_summary: event.output_summary,
+            success: event.success,
+          },
+        });
+      }
       continue;
     }
 
@@ -159,6 +252,23 @@ function upsertStreamingEntry(
     return;
   }
   entries.push({ id, icon, label: `${prefix}: ${compact(delta, 180)}` });
+}
+
+function findToolEntryIndex(entries: TraceEntry[], toolCallId?: string): number {
+  if (!toolCallId) {
+    return -1;
+  }
+  for (let i = entries.length - 1; i >= 0; i -= 1) {
+    const entry = entries[i];
+    if (entry.icon !== "tool") {
+      continue;
+    }
+    if (entry.tool?.tool_call_id !== toolCallId) {
+      continue;
+    }
+    return i;
+  }
+  return -1;
 }
 
 function compact(text: string, max: number): string {

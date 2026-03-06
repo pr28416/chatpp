@@ -1,21 +1,27 @@
-import { Brain, Sparkles, Wrench } from "lucide-react";
+import { Brain, Sparkles } from "lucide-react";
 
 import { AssistantMarkdown } from "@/components/assistant-markdown";
+import {
+  AssistantToolCallPopover,
+  renderToolStatusIcon,
+} from "@/components/assistant-tool-call-popover";
 import { cn } from "@/lib/utils";
-import type { AssistantCitation, AssistantDisplayBlock } from "@/lib/types";
+import type { AssistantCitation, AssistantDisplayBlock, Chat } from "@/lib/types";
 
 interface AssistantStreamBlocksProps {
   blocks: AssistantDisplayBlock[];
   citationByKey: Record<string, AssistantCitation>;
   citationByUniqueRowid: Record<number, AssistantCitation>;
+  chatById: Map<number, Chat>;
   renderUnresolvedAsInvalid?: boolean;
-  onJumpToCitation: (chatId: number | null, rowid: number) => void;
+  onJumpToCitation: (chatId: number | null, rowid?: number | null) => void;
 }
 
 export function AssistantStreamBlocks({
   blocks,
   citationByKey,
   citationByUniqueRowid,
+  chatById,
   renderUnresolvedAsInvalid = true,
   onJumpToCitation,
 }: AssistantStreamBlocksProps) {
@@ -51,25 +57,12 @@ export function AssistantStreamBlocks({
           >
             <div className="space-y-1.5">
               {group.blocks.map((block) => (
-                <div key={block.id} className="flex items-start gap-2">
-                  <span className="mt-0.5 text-muted-foreground">
-                    {block.kind === "reasoning" ? (
-                      <Brain className="h-3 w-3" />
-                    ) : block.kind === "error" ? (
-                      <Sparkles className="h-3 w-3" />
-                    ) : (
-                      <Wrench className="h-3 w-3" />
-                    )}
-                  </span>
-                  <span
-                    className={cn(
-                      "min-w-0 text-muted-foreground",
-                      block.kind === "error" && "text-destructive",
-                    )}
-                  >
-                    {formatBlockLabel(block)}
-                  </span>
-                </div>
+                <TraceRow
+                  key={block.id}
+                  block={block}
+                  chatById={chatById}
+                  onJumpToCitation={onJumpToCitation}
+                />
               ))}
             </div>
           </div>
@@ -113,9 +106,70 @@ function groupBlocks(blocks: AssistantDisplayBlock[]): BlockGroup[] {
   return groups;
 }
 
+function TraceRow({
+  block,
+  chatById,
+  onJumpToCitation,
+}: {
+  block: AssistantDisplayBlock;
+  chatById: Map<number, Chat>;
+  onJumpToCitation: (chatId: number | null, rowid?: number | null) => void;
+}) {
+  const rowContent = (
+    <div className="flex items-start gap-2">
+      <span
+        className={cn(
+          "mt-0.5 text-muted-foreground",
+          block.tool_status === "error" && "opacity-70",
+        )}
+      >
+        {block.kind === "reasoning" ? (
+          <Brain className="h-3 w-3" />
+        ) : block.kind === "error" ? (
+          <Sparkles className="h-3 w-3" />
+        ) : block.kind === "tool_call" ? (
+          renderToolStatusIcon(block.tool_status)
+        ) : (
+          <Sparkles className="h-3 w-3" />
+        )}
+      </span>
+      <span
+        className={cn(
+          "min-w-0 text-muted-foreground",
+          block.kind === "error" && "text-destructive",
+          block.tool_status === "error" && "opacity-70",
+        )}
+      >
+        {formatBlockLabel(block)}
+      </span>
+    </div>
+  );
+
+  if (block.kind !== "tool_call") {
+    return rowContent;
+  }
+
+  return (
+    <AssistantToolCallPopover
+      block={block}
+      chatById={chatById}
+      onJumpToCitation={onJumpToCitation}
+    >
+      <button type="button" className="w-full text-left hover:opacity-90 transition-opacity">
+        {rowContent}
+      </button>
+    </AssistantToolCallPopover>
+  );
+}
+
 function formatBlockLabel(block: AssistantDisplayBlock): string {
   if (block.kind === "reasoning") {
     return `Reasoning: ${compact(block.text ?? "", 240)}`;
+  }
+  if (block.kind === "tool_call" && block.tool_status && block.tool_status !== "running") {
+    if (typeof block.duration_ms === "number") {
+      return `${block.text ?? "Tool complete"} (${formatDuration(block.duration_ms)})`;
+    }
   }
   if (block.kind === "tool_result" && typeof block.duration_ms === "number") {
     return `${block.text ?? "Tool complete"} (${formatDuration(block.duration_ms)})`;

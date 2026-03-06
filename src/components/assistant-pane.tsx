@@ -51,7 +51,7 @@ interface AssistantPaneProps {
   onMentionsChange: (mentions: AssistantMention[]) => void;
   onSubmit: () => void;
   onNewChat: () => void;
-  onJumpToCitation: (chatId: number | null, rowid: number) => void;
+  onJumpToCitation: (chatId: number | null, rowid?: number | null) => void;
 }
 
 interface MentionCandidate {
@@ -681,7 +681,7 @@ const AssistantTranscript = React.memo(function AssistantTranscript({
   showProcessingTrace: boolean;
   selectedChatId: number | null;
   chats: Chat[];
-  onJumpToCitation: (chatId: number | null, rowid: number) => void;
+  onJumpToCitation: (chatId: number | null, rowid?: number | null) => void;
 }) {
   return (
     <>
@@ -707,7 +707,7 @@ const AssistantMessageItem = React.memo(function AssistantMessageItem({
   message: AssistantUiMessage;
   showProcessingTrace: boolean;
   chats: Chat[];
-  onJumpToCitation: (chatId: number | null, rowid: number) => void;
+  onJumpToCitation: (chatId: number | null, rowid?: number | null) => void;
 }) {
   const orderedBlocks = React.useMemo(
     () =>
@@ -837,6 +837,10 @@ const AssistantMessageItem = React.memo(function AssistantMessageItem({
     message.role === "assistant" &&
     message.status !== "streaming" &&
     citationsForLookup.length > 0;
+  const chatById = React.useMemo(
+    () => new Map(chats.map((chat) => [chat.id, chat])),
+    [chats],
+  );
 
   return (
     <div className="text-sm">
@@ -851,6 +855,7 @@ const AssistantMessageItem = React.memo(function AssistantMessageItem({
               blocks={orderedBlocks}
               citationByKey={citationByKey}
               citationByUniqueRowid={citationByUniqueRowid}
+              chatById={chatById}
               renderUnresolvedAsInvalid={message.status !== "streaming"}
               onJumpToCitation={onJumpToCitation}
             />

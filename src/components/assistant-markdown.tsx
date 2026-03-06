@@ -11,7 +11,7 @@ interface AssistantMarkdownProps {
   citationByKey?: Record<string, AssistantCitation>;
   citationByUniqueRowid?: Record<number, AssistantCitation>;
   renderUnresolvedAsInvalid?: boolean;
-  onJumpToCitation: (chatId: number | null, rowid: number) => void;
+  onJumpToCitation: (chatId: number | null, rowid?: number | null) => void;
 }
 
 export function AssistantMarkdown({

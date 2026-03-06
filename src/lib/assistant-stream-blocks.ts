@@ -49,21 +49,49 @@ export function appendEventToDisplayBlocks(
         text: formatToolStartLabel(event),
         tool_name: event.tool_name,
         tool_call_id: event.tool_call_id,
+        tool_status: "running",
+        tool_input_preview: event.input_preview,
+        tool_input_summary: event.input_summary,
+        tool_started_at_ms: event.at_ms,
       },
     ];
   }
 
   if (event.kind === "tool-finish") {
+    const targetIndex = findPendingToolCallIndex(previous, event.tool_call_id);
+    const nextStatus: AssistantDisplayBlock["tool_status"] =
+      event.success === false ? "error" : "success";
+    if (targetIndex >= 0) {
+      const target = previous[targetIndex];
+      const next = {
+        ...target,
+        kind: "tool_call" as const,
+        tool_name: event.tool_name ?? target.tool_name,
+        tool_call_id: event.tool_call_id ?? target.tool_call_id,
+        tool_status: nextStatus,
+        success: event.success,
+        duration_ms: event.duration_ms,
+        tool_output_preview: event.output_preview,
+        tool_output_summary: event.output_summary,
+        tool_finished_at_ms: event.at_ms,
+      };
+      return previous.map((block, index) => (index === targetIndex ? next : block));
+    }
+
     return [
       ...previous,
       {
-        id: makeBlockId(messageId, "tool_result", event.tool_call_id ?? String(event.at_ms), previous.length),
-        kind: "tool_result",
+        id: makeBlockId(messageId, "tool_call", event.tool_call_id ?? String(event.at_ms), previous.length),
+        kind: "tool_call",
         text: formatToolFinishLabel(event),
         tool_name: event.tool_name,
         tool_call_id: event.tool_call_id,
+        tool_status: nextStatus,
         success: event.success,
         duration_ms: event.duration_ms,
+        tool_output_preview: event.output_preview,
+        tool_output_summary: event.output_summary,
+        tool_finished_at_ms: event.at_ms,
       },
     ];
   }
@@ -216,4 +244,21 @@ function compact(text: string, max: number): string {
     return normalized;
   }
   return `${normalized.slice(0, max - 1)}…`;
+}
+
+function findPendingToolCallIndex(previous: AssistantDisplayBlock[], toolCallId?: string): number {
+  if (!toolCallId) {
+    return -1;
+  }
+  for (let index = previous.length - 1; index >= 0; index -= 1) {
+    const block = previous[index];
+    if (block?.kind !== "tool_call") {
+      continue;
+    }
+    if (block.tool_call_id !== toolCallId) {
+      continue;
+    }
+    return index;
+  }
+  return -1;
 }
