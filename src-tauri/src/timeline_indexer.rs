@@ -235,48 +235,53 @@ fn run_timeline_index_job_inner(
     persist_job_state(&timeline_conn, &mut job, &run_id, cancel_jobs)
         .map_err(|e| format!("Failed to set totals: {}", e))?;
 
-    let image_workers = timeline_image_workers();
-    let image_retries = timeline_image_retries();
     let mut media_insights = Vec::<TimelineMediaInsightInsert>::new();
     let mut caption_by_attachment = HashMap::<i32, ImageCaptionResult>::new();
 
-    job.phase = "image-enrichment".to_string();
-    job.progress = 0.10;
-    job.updated_at = Some(timeline_db::now_iso());
-    persist_job_state(&timeline_conn, &mut job, &run_id, cancel_jobs)
-        .map_err(|e| format!("Failed to set image phase: {}", e))?;
+    if timeline_image_enrichment_enabled() {
+        let image_workers = timeline_image_workers();
+        let image_retries = timeline_image_retries();
 
-    if timeline_ai::is_openai_enabled() {
-        let mut progress_persist_error: Option<String> = None;
-        caption_by_attachment = enrich_images_concurrent(
-            &source_conn,
-            source_db_path,
-            &messages,
-            image_workers,
-            image_retries,
-            cancel_jobs,
-            config.chat_id,
-            &mut |done, total| {
-                if total == 0 {
-                    return;
-                }
-                job.phase = "image-enrichment".to_string();
-                job.processed_messages = done.min(i32::MAX as usize) as i32;
-                job.total_messages = total.min(i32::MAX as usize) as i32;
-                job.progress = 0.10 + ((done as f32) / (total as f32)) * 0.08;
-                job.updated_at = Some(timeline_db::now_iso());
-                if let Err(err) = persist_job_state(&timeline_conn, &mut job, &run_id, cancel_jobs) {
-                    if progress_persist_error.is_none() {
-                        progress_persist_error = Some(format!(
-                            "Failed to persist image enrichment progress: {}",
-                            err
-                        ));
+        job.phase = "image-enrichment".to_string();
+        job.progress = 0.10;
+        job.updated_at = Some(timeline_db::now_iso());
+        persist_job_state(&timeline_conn, &mut job, &run_id, cancel_jobs)
+            .map_err(|e| format!("Failed to set image phase: {}", e))?;
+
+        if timeline_ai::is_openai_enabled() {
+            let mut progress_persist_error: Option<String> = None;
+            caption_by_attachment = enrich_images_concurrent(
+                &source_conn,
+                source_db_path,
+                &messages,
+                image_workers,
+                image_retries,
+                cancel_jobs,
+                config.chat_id,
+                &mut |done, total| {
+                    if total == 0 {
+                        return;
                     }
-                }
-            },
-        );
-        if let Some(err) = progress_persist_error {
-            return Err(err);
+                    job.phase = "image-enrichment".to_string();
+                    job.processed_messages = done.min(i32::MAX as usize) as i32;
+                    job.total_messages = total.min(i32::MAX as usize) as i32;
+                    job.progress = 0.10 + ((done as f32) / (total as f32)) * 0.08;
+                    job.updated_at = Some(timeline_db::now_iso());
+                    if let Err(err) =
+                        persist_job_state(&timeline_conn, &mut job, &run_id, cancel_jobs)
+                    {
+                        if progress_persist_error.is_none() {
+                            progress_persist_error = Some(format!(
+                                "Failed to persist image enrichment progress: {}",
+                                err
+                            ));
+                        }
+                    }
+                },
+            );
+            if let Some(err) = progress_persist_error {
+                return Err(err);
+            }
         }
     }
 
@@ -314,6 +319,10 @@ fn run_timeline_index_job_inner(
     let mut openai_used = false;
     let mut degraded = false;
 
+    // Image enrichment temporarily repurposes the progress counters for attachment tasks.
+    // Restore message-based totals before moving into L0 window generation.
+    job.processed_messages = 0;
+    job.total_messages = messages.len().min(i32::MAX as usize) as i32;
     job.phase = "l0-generation".to_string();
     job.progress = 0.18;
     job.updated_at = Some(timeline_db::now_iso());
@@ -2649,6 +2658,12 @@ fn timeline_image_retries() -> usize {
         .and_then(|v| v.parse::<usize>().ok())
         .filter(|v| *v >= 1 && *v <= 6)
         .unwrap_or(DEFAULT_IMAGE_RETRIES)
+}
+
+fn timeline_image_enrichment_enabled() -> bool {
+    crate::env_config::get_env_var("TIMELINE_ENABLE_IMAGE_ENRICHMENT")
+        .map(|v| !matches!(v.to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off"))
+        .unwrap_or(true)
 }
 
 fn timeline_subtopic_max_moments() -> usize {
