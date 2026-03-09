@@ -381,10 +381,12 @@ fn emit_stream_event(app_handle: &tauri::AppHandle, stream_id: &str, event: &Ass
 fn spawn_agent_process() -> Result<std::process::Child, String> {
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
     let script_path = resolve_script_path(&cwd)?;
+    let env_overrides = crate::env_config::assistant_env_overrides();
 
     let mut cmd = Command::new("node");
     cmd.arg(script_path)
         .current_dir(cwd)
+        .envs(env_overrides)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

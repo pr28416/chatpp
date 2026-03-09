@@ -97,6 +97,7 @@ const SUPPORTED_MODELS_BY_PROVIDER = {
     "claude-haiku-4-5",
   ]),
   google: new Set([
+    "gemini-3.1-flash-lite-preview",
     "gemini-2.5-flash-lite",
     "gemini-2.5-flash",
     "gemini-2.5-pro",

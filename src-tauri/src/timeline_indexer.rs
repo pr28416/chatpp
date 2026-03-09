@@ -17,6 +17,7 @@ use rusqlite::Connection;
 use std::cmp::{max, min};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -215,7 +216,7 @@ fn run_timeline_index_job_inner(
     job.started_at = Some(timeline_db::now_iso());
     job.updated_at = Some(timeline_db::now_iso());
     job.run_id = Some(run_id.clone());
-    timeline_db::set_job_state(&timeline_conn, &job, &run_id)
+    persist_job_state(&timeline_conn, &mut job, &run_id, cancel_jobs)
         .map_err(|e| format!("Failed to initialize timeline job state: {}", e))?;
 
     let chat_inputs = load_chat_inputs(&source_conn, config.chat_id, contact_names)
@@ -231,7 +232,7 @@ fn run_timeline_index_job_inner(
 
     job.total_messages = messages.len() as i32;
     job.processed_messages = 0;
-    timeline_db::set_job_state(&timeline_conn, &job, &run_id)
+    persist_job_state(&timeline_conn, &mut job, &run_id, cancel_jobs)
         .map_err(|e| format!("Failed to set totals: {}", e))?;
 
     let image_workers = timeline_image_workers();
@@ -242,10 +243,11 @@ fn run_timeline_index_job_inner(
     job.phase = "image-enrichment".to_string();
     job.progress = 0.10;
     job.updated_at = Some(timeline_db::now_iso());
-    timeline_db::set_job_state(&timeline_conn, &job, &run_id)
+    persist_job_state(&timeline_conn, &mut job, &run_id, cancel_jobs)
         .map_err(|e| format!("Failed to set image phase: {}", e))?;
 
     if timeline_ai::is_openai_enabled() {
+        let mut progress_persist_error: Option<String> = None;
         caption_by_attachment = enrich_images_concurrent(
             &source_conn,
             source_db_path,
@@ -254,7 +256,28 @@ fn run_timeline_index_job_inner(
             image_retries,
             cancel_jobs,
             config.chat_id,
+            &mut |done, total| {
+                if total == 0 {
+                    return;
+                }
+                job.phase = "image-enrichment".to_string();
+                job.processed_messages = done.min(i32::MAX as usize) as i32;
+                job.total_messages = total.min(i32::MAX as usize) as i32;
+                job.progress = 0.10 + ((done as f32) / (total as f32)) * 0.08;
+                job.updated_at = Some(timeline_db::now_iso());
+                if let Err(err) = persist_job_state(&timeline_conn, &mut job, &run_id, cancel_jobs) {
+                    if progress_persist_error.is_none() {
+                        progress_persist_error = Some(format!(
+                            "Failed to persist image enrichment progress: {}",
+                            err
+                        ));
+                    }
+                }
+            },
         );
+        if let Some(err) = progress_persist_error {
+            return Err(err);
+        }
     }
 
     if is_canceled(cancel_jobs, config.chat_id) {
@@ -294,7 +317,7 @@ fn run_timeline_index_job_inner(
     job.phase = "l0-generation".to_string();
     job.progress = 0.18;
     job.updated_at = Some(timeline_db::now_iso());
-    timeline_db::set_job_state(&timeline_conn, &job, &run_id)
+    persist_job_state(&timeline_conn, &mut job, &run_id, cancel_jobs)
         .map_err(|e| format!("Failed to set l0 phase: {}", e))?;
 
     let mut seen_ranges = HashSet::<(i32, i32)>::new();
@@ -463,7 +486,7 @@ fn run_timeline_index_job_inner(
         job.completed_batches = completed_batches;
         job.progress = 0.18 + ((window_idx as f32 + 1.0) / (windows.len().max(1) as f32)) * 0.42;
         job.updated_at = Some(timeline_db::now_iso());
-        timeline_db::set_job_state(&timeline_conn, &job, &run_id)
+        persist_job_state(&timeline_conn, &mut job, &run_id, cancel_jobs)
             .map_err(|e| format!("Failed to persist l0 progress: {}", e))?;
     }
 
@@ -505,7 +528,7 @@ fn run_timeline_index_job_inner(
     job.phase = "l2-topics".to_string();
     job.progress = 0.66;
     job.updated_at = Some(timeline_db::now_iso());
-    timeline_db::set_job_state(&timeline_conn, &job, &run_id)
+    persist_job_state(&timeline_conn, &mut job, &run_id, cancel_jobs)
         .map_err(|e| format!("Failed to persist l2 phase: {}", e))?;
 
     let l0_nodes_snapshot = all_nodes.clone();
@@ -550,7 +573,7 @@ fn run_timeline_index_job_inner(
     job.phase = "l1-subtopics".to_string();
     job.progress = 0.82;
     job.updated_at = Some(timeline_db::now_iso());
-    timeline_db::set_job_state(&timeline_conn, &job, &run_id)
+    persist_job_state(&timeline_conn, &mut job, &run_id, cancel_jobs)
         .map_err(|e| format!("Failed to persist l1 phase: {}", e))?;
 
     let subtopic_result = build_l1_contiguous_subtopics(
@@ -584,7 +607,7 @@ fn run_timeline_index_job_inner(
     job.phase = "persist".to_string();
     job.progress = 0.93;
     job.updated_at = Some(timeline_db::now_iso());
-    timeline_db::set_job_state(&timeline_conn, &job, &run_id)
+    persist_job_state(&timeline_conn, &mut job, &run_id, cancel_jobs)
         .map_err(|e| format!("Failed to persist persist phase: {}", e))?;
 
     let mut evidence = Vec::<TimelineEvidenceInsert>::new();
@@ -951,6 +974,7 @@ fn enrich_images_concurrent(
     retries: usize,
     cancel_jobs: &Arc<Mutex<HashSet<i32>>>,
     chat_id: i32,
+    on_progress: &mut dyn FnMut(usize, usize),
 ) -> HashMap<i32, ImageCaptionResult> {
     let mut tasks = VecDeque::<ImageTask>::new();
     let mut seen = HashSet::<i32>::new();
@@ -976,8 +1000,12 @@ fn enrich_images_concurrent(
         return HashMap::new();
     }
 
+    let total_tasks = tasks.len();
+    on_progress(0, total_tasks);
+
     let queue = Arc::new(Mutex::new(tasks));
     let out = Arc::new(Mutex::new(HashMap::<i32, ImageCaptionResult>::new()));
+    let completed = Arc::new(AtomicUsize::new(0));
 
     let worker_count = workers.max(1).min(12);
     let mut handles = Vec::new();
@@ -986,6 +1014,7 @@ fn enrich_images_concurrent(
         let queue = queue.clone();
         let out = out.clone();
         let cancel_jobs = cancel_jobs.clone();
+        let completed = completed.clone();
         handles.push(thread::spawn(move || loop {
             if is_canceled(&cancel_jobs, chat_id) {
                 break;
@@ -1007,12 +1036,28 @@ fn enrich_images_concurrent(
                     locked.insert(task.attachment_rowid, result);
                 }
             }
+            completed.fetch_add(1, Ordering::Relaxed);
         }));
+    }
+
+    let mut last_reported = usize::MAX;
+    loop {
+        let done = completed.load(Ordering::Relaxed).min(total_tasks);
+        if done != last_reported {
+            on_progress(done, total_tasks);
+            last_reported = done;
+        }
+        if handles.iter().all(|handle| handle.is_finished()) {
+            break;
+        }
+        thread::sleep(Duration::from_millis(500));
     }
 
     for handle in handles {
         let _ = handle.join();
     }
+
+    on_progress(completed.load(Ordering::Relaxed).min(total_tasks), total_tasks);
 
     out.lock().map(|v| v.clone()).unwrap_or_default()
 }
@@ -2656,6 +2701,24 @@ fn is_canceled(cancel_jobs: &Arc<Mutex<HashSet<i32>>>, chat_id: i32) -> bool {
         .ok()
         .map(|set| set.contains(&chat_id))
         .unwrap_or(false)
+}
+
+fn persist_job_state(
+    timeline_conn: &Connection,
+    job: &mut TimelineJobState,
+    job_id: &str,
+    cancel_jobs: &Arc<Mutex<HashSet<i32>>>,
+) -> Result<(), String> {
+    if matches!(job.status.as_str(), "running" | "canceling")
+        && is_canceled(cancel_jobs, job.chat_id)
+    {
+        job.status = "canceling".to_string();
+        job.phase = "canceling".to_string();
+        job.error = Some("Cancel requested".to_string());
+        job.updated_at = Some(timeline_db::now_iso());
+    }
+
+    timeline_db::set_job_state(timeline_conn, job, job_id).map_err(|e| e.to_string())
 }
 
 fn mark_canceled(

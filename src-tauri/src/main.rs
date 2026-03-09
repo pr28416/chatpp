@@ -4,6 +4,7 @@ mod assistant_bridge;
 mod assistant_tools;
 mod commands;
 mod db;
+mod env_config;
 mod state;
 mod timeline_ai;
 mod timeline_db;
@@ -12,11 +13,10 @@ mod timeline_types;
 mod types;
 
 use imessage_database::util::platform::Platform;
-use std::path::PathBuf;
 use tauri::Manager;
 
 fn main() {
-    load_env_files();
+    env_config::apply_env_files();
 
     add_platform_plugins(tauri::Builder::default())
         .manage(state::init_app_state())
@@ -63,17 +63,6 @@ fn add_platform_plugins(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<t
     #[cfg(not(target_os = "macos"))]
     {
         builder
-    }
-}
-
-fn load_env_files() {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let candidates = [cwd.join(".env"), cwd.join("src-tauri").join(".env")];
-
-    for path in candidates {
-        if path.exists() {
-            let _ = dotenvy::from_path(path);
-        }
     }
 }
 

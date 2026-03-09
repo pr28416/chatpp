@@ -17,6 +17,46 @@ pub fn start_window_drag(window: tauri::Window) -> Result<(), String> {
     window.start_dragging().map_err(|e| e.to_string())
 }
 
+fn reconcile_stale_timeline_job_state(
+    state: &AppState,
+    conn: &rusqlite::Connection,
+    mut current: TimelineJobState,
+) -> Result<TimelineJobState, String> {
+    let is_running = state
+        .running_timeline_jobs
+        .lock()
+        .map_err(|_| "Failed to lock running timeline jobs".to_string())?
+        .contains(&current.chat_id);
+
+    if is_running || !matches!(current.status.as_str(), "running" | "canceling") {
+        return Ok(current);
+    }
+
+    if let Ok(mut canceled) = state.cancel_timeline_jobs.lock() {
+        canceled.remove(&current.chat_id);
+    }
+
+    if current.status == "canceling" {
+        current.status = "canceled".to_string();
+        current.phase = "finalizing".to_string();
+        current.error = Some("Canceled by user".to_string());
+    } else {
+        current.status = "failed".to_string();
+        current.phase = "failed".to_string();
+        current.error = Some("Timeline indexing stopped unexpectedly; previous worker is no longer running".to_string());
+    }
+
+    let now = timeline_db::now_iso();
+    current.updated_at = Some(now.clone());
+    current.finished_at = Some(now);
+    let job_id = current
+        .run_id
+        .clone()
+        .unwrap_or_else(|| format!("reconciled-{}", Uuid::new_v4()));
+    timeline_db::set_job_state(conn, &current, &job_id).map_err(|e| e.to_string())?;
+    Ok(current)
+}
+
 #[tauri::command]
 pub fn get_chats(state: tauri::State<'_, AppState>) -> Result<Vec<ChatResponse>, String> {
     let db = rusqlite::Connection::open_with_flags(
@@ -372,6 +412,7 @@ pub fn cancel_timeline_index_impl(
 
     let conn = timeline_db::open_rw(&state.timeline_db_path).map_err(|e| e.to_string())?;
     let mut current = timeline_db::get_job_state(&conn, chat_id).map_err(|e| e.to_string())?;
+    current = reconcile_stale_timeline_job_state(state, &conn, current)?;
 
     let terminal = matches!(
         current.status.as_str(),
@@ -422,7 +463,8 @@ pub fn get_timeline_index_state_impl(
 ) -> Result<TimelineJobState, String> {
     eprintln!("[timeline-cmd] get_state chat_id={}", chat_id);
     let conn = timeline_db::open_rw(&state.timeline_db_path).map_err(|e| e.to_string())?;
-    timeline_db::get_job_state(&conn, chat_id).map_err(|e| e.to_string())
+    let current = timeline_db::get_job_state(&conn, chat_id).map_err(|e| e.to_string())?;
+    reconcile_stale_timeline_job_state(state, &conn, current)
 }
 
 #[tauri::command]
@@ -730,27 +772,19 @@ pub fn get_assistant_provider_availability() -> HashMap<String, bool> {
     let mut out = HashMap::new();
     out.insert(
         "openai".to_string(),
-        std::env::var("OPENAI_API_KEY")
-            .map(|v| !v.trim().is_empty())
-            .unwrap_or(false),
+        crate::env_config::get_env_var("OPENAI_API_KEY").is_some(),
     );
     out.insert(
         "anthropic".to_string(),
-        std::env::var("ANTHROPIC_API_KEY")
-            .map(|v| !v.trim().is_empty())
-            .unwrap_or(false),
+        crate::env_config::get_env_var("ANTHROPIC_API_KEY").is_some(),
     );
     out.insert(
         "google".to_string(),
-        std::env::var("GOOGLE_GENERATIVE_AI_API_KEY")
-            .map(|v| !v.trim().is_empty())
-            .unwrap_or(false),
+        crate::env_config::get_env_var("GOOGLE_GENERATIVE_AI_API_KEY").is_some(),
     );
     out.insert(
         "xai".to_string(),
-        std::env::var("XAI_API_KEY")
-            .map(|v| !v.trim().is_empty())
-            .unwrap_or(false),
+        crate::env_config::get_env_var("XAI_API_KEY").is_some(),
     );
     out
 }
@@ -774,7 +808,9 @@ fn query_source_max_rowid(db_path: &std::path::Path, chat_id: i32) -> Result<i32
 #[cfg(test)]
 mod smoke_tests {
     use super::*;
+    use std::collections::{HashMap, HashSet};
     use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
     use std::thread;
     use std::time::{Duration, Instant};
 
@@ -786,6 +822,65 @@ mod smoke_tests {
                 let _ = dotenvy::from_path(path);
             }
         }
+    }
+
+    fn make_test_state() -> AppState {
+        let timeline_db_path = std::env::temp_dir().join(format!(
+            "chatpp-timeline-test-{}.db",
+            Uuid::new_v4()
+        ));
+        crate::timeline_db::init_timeline_db(&timeline_db_path).expect("init test timeline db");
+        AppState {
+            db_path: PathBuf::from("/tmp/chat.db"),
+            timeline_db_path,
+            handles: HashMap::new(),
+            chat_participants: HashMap::new(),
+            contact_names: HashMap::new(),
+            contact_photos: HashMap::new(),
+            running_timeline_jobs: Arc::new(Mutex::new(HashSet::new())),
+            cancel_timeline_jobs: Arc::new(Mutex::new(HashSet::new())),
+        }
+    }
+
+    #[test]
+    fn get_timeline_state_reconciles_stale_canceling_job() {
+        let state = make_test_state();
+        let mut conn = crate::timeline_db::open_rw(&state.timeline_db_path).expect("open timeline db");
+        let mut job = TimelineJobState::idle(42);
+        job.status = "canceling".to_string();
+        job.phase = "canceling".to_string();
+        job.progress = 0.25;
+        job.run_id = Some("run-42".to_string());
+        crate::timeline_db::set_job_state(&mut conn, &job, "job-42").expect("persist job");
+
+        let next = get_timeline_index_state_impl(&state, 42).expect("get reconciled state");
+
+        assert_eq!(next.status, "canceled");
+        assert_eq!(next.phase, "finalizing");
+        assert_eq!(next.error.as_deref(), Some("Canceled by user"));
+        assert!(next.finished_at.is_some());
+    }
+
+    #[test]
+    fn get_timeline_state_reconciles_stale_running_job() {
+        let state = make_test_state();
+        let mut conn = crate::timeline_db::open_rw(&state.timeline_db_path).expect("open timeline db");
+        let mut job = TimelineJobState::idle(43);
+        job.status = "running".to_string();
+        job.phase = "image-enrichment".to_string();
+        job.progress = 0.10;
+        job.run_id = Some("run-43".to_string());
+        crate::timeline_db::set_job_state(&mut conn, &job, "job-43").expect("persist job");
+
+        let next = get_timeline_index_state_impl(&state, 43).expect("get reconciled state");
+
+        assert_eq!(next.status, "failed");
+        assert_eq!(next.phase, "failed");
+        assert_eq!(
+            next.error.as_deref(),
+            Some("Timeline indexing stopped unexpectedly; previous worker is no longer running")
+        );
+        assert!(next.finished_at.is_some());
     }
 
     #[test]
