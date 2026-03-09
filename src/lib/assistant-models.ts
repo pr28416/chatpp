@@ -66,6 +66,13 @@ export const ASSISTANT_MODEL_OPTIONS: AssistantModelOption[] = [
     requiredEnvVar: "GOOGLE_GENERATIVE_AI_API_KEY",
   },
   {
+    id: "gemini-3.1-flash-lite-preview",
+    label: "Gemini 3.1 Flash-Lite (Preview)",
+    provider: "google",
+    providerLabel: "Google",
+    requiredEnvVar: "GOOGLE_GENERATIVE_AI_API_KEY",
+  },
+  {
     id: "gemini-2.5-flash",
     label: "Gemini 2.5 Flash",
     provider: "google",

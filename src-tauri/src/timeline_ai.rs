@@ -7,6 +7,8 @@ use std::time::{Duration, Instant};
 
 const DEFAULT_OPENAI_MODEL: &str = "gpt-5-nano";
 const DEFAULT_TIMEOUT_SECS: u64 = 45;
+const DEFAULT_IMAGE_TIMEOUT_SECS: u64 = 20;
+const DEFAULT_CONNECT_TIMEOUT_SECS: u64 = 10;
 const MAX_IMAGE_BYTES: usize = 4 * 1024 * 1024;
 const DEFAULT_IMAGE_MAX_DIMENSION: i32 = 1600;
 const DEFAULT_IMAGE_JPEG_QUALITY: i32 = 72;
@@ -160,29 +162,21 @@ Rules:
 ";
 
 pub fn is_openai_enabled() -> bool {
-    std::env::var("OPENAI_API_KEY")
-        .map(|v| !v.trim().is_empty())
-        .unwrap_or(false)
+    crate::env_config::get_env_var("OPENAI_API_KEY").is_some()
 }
 
 pub fn openai_model_default() -> String {
-    std::env::var("OPENAI_MODEL")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
+    crate::env_config::get_env_var("OPENAI_MODEL")
         .unwrap_or_else(|| DEFAULT_OPENAI_MODEL.to_string())
 }
 
 pub fn openai_model_text() -> String {
-    std::env::var("OPENAI_MODEL_TIMELINE_TEXT")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
+    crate::env_config::get_env_var("OPENAI_MODEL_TIMELINE_TEXT")
         .unwrap_or_else(openai_model_default)
 }
 
 pub fn openai_model_media() -> String {
-    std::env::var("OPENAI_MODEL_TIMELINE_MEDIA")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
+    crate::env_config::get_env_var("OPENAI_MODEL_TIMELINE_MEDIA")
         .unwrap_or_else(openai_model_default)
 }
 
@@ -297,13 +291,20 @@ pub fn caption_image_file(path: &str, mime_type: &str) -> Result<(String, String
     describe_image_for_timeline(path, mime_type)
 }
 
+fn image_timeout_secs() -> u64 {
+    crate::env_config::get_env_var("TIMELINE_IMAGE_TIMEOUT_SECS")
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(|v| v.clamp(5, 120))
+        .unwrap_or(DEFAULT_IMAGE_TIMEOUT_SECS)
+}
+
 pub fn describe_image_for_timeline(
     path: &str,
     mime_type: &str,
 ) -> Result<(String, String), String> {
     let started = Instant::now();
-    let api_key = std::env::var("OPENAI_API_KEY")
-        .map_err(|_| "OPENAI_API_KEY is not set; skipping media captioning".to_string())?;
+    let api_key = crate::env_config::get_env_var("OPENAI_API_KEY")
+        .ok_or_else(|| "OPENAI_API_KEY is not set; skipping media captioning".to_string())?;
 
     let (bytes, effective_mime, transformed_path) =
         prepare_image_bytes_for_caption(path, mime_type)?;
@@ -315,7 +316,8 @@ pub fn describe_image_for_timeline(
     };
 
     let client = Client::builder()
-        .timeout(Duration::from_secs(DEFAULT_TIMEOUT_SECS))
+        .connect_timeout(Duration::from_secs(DEFAULT_CONNECT_TIMEOUT_SECS))
+        .timeout(Duration::from_secs(image_timeout_secs()))
         .build()
         .map_err(|e| format!("Failed to initialize HTTP client: {}", e))?;
 
@@ -477,8 +479,7 @@ fn run_responses_call(
     schema: &Value,
 ) -> Result<String, String> {
     let started = Instant::now();
-    if std::env::var("TIMELINE_AI_MOCK")
-        .ok()
+    if crate::env_config::get_env_var("TIMELINE_AI_MOCK")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false)
     {
@@ -493,8 +494,8 @@ fn run_responses_call(
         return Ok(mock);
     }
 
-    let api_key = std::env::var("OPENAI_API_KEY")
-        .map_err(|_| "OPENAI_API_KEY is not set; cannot run AI timeline indexing".to_string())?;
+    let api_key = crate::env_config::get_env_var("OPENAI_API_KEY")
+        .ok_or_else(|| "OPENAI_API_KEY is not set; cannot run AI timeline indexing".to_string())?;
 
     let client = Client::builder()
         .timeout(Duration::from_secs(DEFAULT_TIMEOUT_SECS))
